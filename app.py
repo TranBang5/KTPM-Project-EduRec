@@ -41,108 +41,6 @@ login_manager = LoginManager()
 login_manager.init_app(app)
 login_manager.login_view = 'login'
 
-# JWT Helper Functions
-def generate_jwt_token(user_id, token_type='access'):
-    """Generate JWT token"""
-    if token_type == 'access':
-        expires = datetime.utcnow() + app.config['JWT_ACCESS_TOKEN_EXPIRES']
-    else:  # refresh
-        expires = datetime.utcnow() + app.config['JWT_REFRESH_TOKEN_EXPIRES']
-    
-    payload = {
-        'user_id': user_id,
-        'type': token_type,
-        'exp': expires,
-        'iat': datetime.utcnow()
-    }
-    
-    return jwt.encode(payload, app.config['JWT_SECRET_KEY'], algorithm='HS256')
-
-def verify_jwt_token(token):
-    """Verify JWT token"""
-    try:
-        payload = jwt.decode(token, app.config['JWT_SECRET_KEY'], algorithms=['HS256'])
-        return payload
-    except jwt.ExpiredSignatureError:
-        return None
-    except jwt.InvalidTokenError:
-        return None
-
-def extract_token_from_header(auth_header):
-    """Extract token from Authorization header"""
-    if not auth_header:
-        return None
-    try:
-        return auth_header.split(' ')[1]  # Bearer <token>
-    except IndexError:
-        return None
-
-def jwt_required(f):
-    """Decorator to require JWT authentication"""
-    @wraps(f)
-    def decorated_function(*args, **kwargs):
-        auth_header = request.headers.get('Authorization')
-        token = extract_token_from_header(auth_header)
-        
-        if not token:
-            return jsonify({'error': 'Token is missing'}), 401
-        
-        payload = verify_jwt_token(token)
-        if not payload or payload.get('type') != 'access':
-            return jsonify({'error': 'Invalid token'}), 401
-        
-        # Store user info in Flask g object
-        user = User.query.get(payload['user_id'])
-        if not user:
-            return jsonify({'error': 'User not found'}), 401
-        
-        g.current_user = user
-        g.current_user_id = user.id
-        
-        return f(*args, **kwargs)
-    
-    return decorated_function
-
-def optional_jwt(f):
-    """Decorator for optional JWT authentication"""
-    @wraps(f)
-    def decorated_function(*args, **kwargs):
-        auth_header = request.headers.get('Authorization')
-        token = extract_token_from_header(auth_header)
-        
-        if token:
-            payload = verify_jwt_token(token)
-            if payload and payload.get('type') == 'access':
-                user = User.query.get(payload['user_id'])
-                if user:
-                    g.current_user = user
-                    g.current_user_id = user.id
-                else:
-                    g.current_user = None
-                    g.current_user_id = None
-            else:
-                g.current_user = None
-                g.current_user_id = None
-        else:
-            g.current_user = None
-            g.current_user_id = None
-        
-        return f(*args, **kwargs)
-    
-    return decorated_function
-
-def get_current_user():
-    """Get current user from g object"""
-    return getattr(g, 'current_user', None)
-
-def get_current_user_id():
-    """Get current user ID from g object"""
-    return getattr(g, 'current_user_id', None)
-
-def is_jwt_authenticated():
-    """Check if user is JWT authenticated"""
-    return get_current_user() is not None
-
 # Load preprocessed data and model
 print("Đang tải dữ liệu đã xử lý trước...")
 data = load_and_preprocess_data()
@@ -239,18 +137,55 @@ def logout():
 from services.auth import auth_bp
 app.register_blueprint(auth_bp)
 
+# Register Profile Service Blueprint
+from services.profile import profile_bp
+app.register_blueprint(profile_bp)
+
+# Profile Service is now handled by services/profile Blueprint
+
 @app.route('/profile', methods=['GET', 'POST'])
 @login_required
 def profile():
     if request.method == 'POST':
-        current_user.school = request.form.get('school')
-        current_user.current_grade = request.form.get('current_grade')
-        current_user.favorite_subjects = request.form.get('favorite_subjects')
-        current_user.learning_goals = request.form.get('learning_goals')
-        current_user.preferred_learning_method = request.form.get('preferred_learning_method')
-        db.session.commit()
-        flash('Profile updated successfully')
+        # Get JWT token for API call
+        from services.auth.jwt_utils import generate_jwt_token
+        token = generate_jwt_token(current_user.id)
+        
+        # Prepare data for Profile Service API
+        profile_data = {
+            'full_name': current_user.full_name,
+            'school': request.form.get('school'),
+            'current_grade': request.form.get('current_grade'),
+            'favorite_subjects': request.form.get('favorite_subjects'),
+            'learning_goals': request.form.get('learning_goals'),
+            'preferred_learning_method': request.form.get('preferred_learning_method')
+        }
+        
+        # Call Profile Service API
+        import requests
+        try:
+            response = requests.put(
+                'http://localhost:5000/api/profile',
+                json=profile_data,
+                headers={'Authorization': f'Bearer {token}'}
+            )
+            
+            if response.status_code == 200:
+                flash('Profile updated successfully')
+                # Update local user object
+                current_user.school = profile_data['school']
+                current_user.current_grade = profile_data['current_grade']
+                current_user.favorite_subjects = profile_data['favorite_subjects']
+                current_user.learning_goals = profile_data['learning_goals']
+                current_user.preferred_learning_method = profile_data['preferred_learning_method']
+                db.session.commit()
+            else:
+                flash('Failed to update profile')
+        except Exception as e:
+            flash(f'Error updating profile: {str(e)}')
+        
         return redirect(url_for('profile'))
+    
     return render_template('profile.html', user=current_user)
 
 @app.route('/recommendations', methods=['GET', 'POST'])
@@ -1414,7 +1349,11 @@ def health_check():
         'status': 'healthy',
         'service': 'main-app',
         'jwt_enabled': True,
-        'features': ['authentication', 'recommendation', 'study_plan']
+        'features': ['authentication', 'recommendation', 'study_plan', 'profile_management'],
+        'microservices': {
+            'auth-service': '/auth/health',
+            'profile-service': '/api/profile/health'
+        }
     }), 200
 
 if __name__ == '__main__':
