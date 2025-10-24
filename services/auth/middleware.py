@@ -8,12 +8,16 @@ def jwt_required(f):
     
     @wraps(f)
     def decorated_function(*args, **kwargs):
-        auth_header = request.headers.get('Authorization')
-        if not auth_header:
-            return jsonify({'error': 'Authorization header required'}), 401
+        # Try to get token from cookie first
+        token = request.cookies.get('jwt_token')
+        if not token:
+            # Fallback to Authorization header
+            auth_header = request.headers.get('Authorization')
+            if not auth_header:
+                return jsonify({'error': 'Authentication required'}), 401
+            token = auth_header.split(' ')[1]
         
         try:
-            token = auth_header.split(' ')[1]
             payload = verify_jwt_token(token)
             if not payload or payload.get('type') != 'access':
                 return jsonify({'error': 'Invalid token'}), 401
@@ -37,10 +41,19 @@ def optional_jwt(f):
     
     @wraps(f)
     def decorated_function(*args, **kwargs):
-        auth_header = request.headers.get('Authorization')
-        if auth_header:
+        # Try to get token from cookie first
+        token = request.cookies.get('jwt_token')
+        if not token:
+            # Fallback to Authorization header
+            auth_header = request.headers.get('Authorization')
+            if auth_header:
+                try:
+                    token = auth_header.split(' ')[1]
+                except:
+                    token = None
+        
+        if token:
             try:
-                token = auth_header.split(' ')[1]
                 payload = verify_jwt_token(token)
                 if payload and payload.get('type') == 'access':
                     g.user_id = payload['user_id']

@@ -72,17 +72,8 @@ else:
     print("Cảnh báo: Không tìm thấy checkpoint nào trong", WEIGHTS_DIR)
 
 @app.route('/')
+@optional_jwt
 def index():
-    # Check JWT token from cookie
-    jwt_token = request.cookies.get('jwt_token')
-    if jwt_token:
-        try:
-            from services.auth.jwt_utils import verify_jwt_token
-            payload = verify_jwt_token(jwt_token)
-            if payload and payload.get('type') == 'access':
-                return redirect(url_for('dashboard'))
-        except:
-            pass
     return render_template('index.html')
 
 @app.route('/register', methods=['GET', 'POST'])
@@ -181,48 +172,33 @@ app.register_blueprint(profile_bp)
 from services.catalog import catalog_bp
 app.register_blueprint(catalog_bp)
 
-
-# Profile Service is now handled by services/profile Blueprint
+# Context processor to make current_user available in all templates
+@app.context_processor
+def inject_current_user():
+    return dict(current_user=get_current_user())
 
 @app.route('/profile', methods=['GET', 'POST'])
 @jwt_required
 def profile():
+    user = get_current_user()
+    
     if request.method == 'POST':
-        # Get JWT token from cookie
-        jwt_token = request.cookies.get('jwt_token')
-        if not jwt_token:
-            flash('Please login first')
-            return redirect(url_for('login'))
-        
-        # Prepare data for Profile Service API
-        profile_data = {
-            'full_name': get_current_user().full_name,
-            'school': request.form.get('school'),
-            'current_grade': request.form.get('current_grade'),
-            'favorite_subjects': request.form.get('favorite_subjects'),
-            'learning_goals': request.form.get('learning_goals'),
-            'preferred_learning_method': request.form.get('preferred_learning_method')
-        }
-        
-        # Call Profile Service API
-        import requests
+        # Update user profile directly in database
         try:
-            response = requests.put(
-                'http://localhost:5000/api/profile',
-                json=profile_data,
-                headers={'Authorization': f'Bearer {jwt_token}'}
-            )
+            user.school = request.form.get('school', user.school)
+            user.current_grade = request.form.get('current_grade', user.current_grade)
+            user.favorite_subjects = request.form.get('favorite_subjects', user.favorite_subjects)
+            user.learning_goals = request.form.get('learning_goals', user.learning_goals)
+            user.preferred_learning_method = request.form.get('preferred_learning_method', user.preferred_learning_method)
             
-            if response.status_code == 200:
-                flash('Profile updated successfully')
-            else:
-                flash('Failed to update profile')
+            db.session.commit()
+            flash('Profile updated successfully')
         except Exception as e:
             flash(f'Error updating profile: {str(e)}')
         
         return redirect(url_for('profile'))
     
-    return render_template('profile.html', user=get_current_user())
+    return render_template('profile.html', user=user)
 
 @app.route('/recommendations', methods=['GET', 'POST'])
 @jwt_required
@@ -1129,8 +1105,9 @@ def init_db():
 @app.route('/dashboard')
 @jwt_required
 def dashboard():
+    user = get_current_user()
     # Get user's study plan items
-    study_plan_items = StudyPlanItem.query.filter_by(user_id=current_user.id).all()
+    study_plan_items = StudyPlanItem.query.filter_by(user_id=user.id).all()
     
     # Get recommendations count
     recommendations = {
@@ -1375,7 +1352,8 @@ def feedback():
             flash('Vui lòng điền đầy đủ thông tin phản hồi')
     
     # Get user's previous feedback
-    feedbacks = Feedback.query.filter_by(user_id=current_user.id).order_by(Feedback.created_at.desc()).all()
+    user = get_current_user()
+    feedbacks = Feedback.query.filter_by(user_id=user.id).order_by(Feedback.created_at.desc()).all()
     
     return render_template('feedback.html', success=success, feedbacks=feedbacks)
 
