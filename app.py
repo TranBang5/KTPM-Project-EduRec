@@ -210,11 +210,11 @@ def recommendations():
     
     # Prepare user features for the model
     user_features = {
-        'truong_hoc_hien_tai': str(current_user.school).strip().lower(),
-        'khoi_lop_hien_tai': str(current_user.current_grade).strip().lower(),
-        'muc_tieu_hoc': str(current_user.learning_goals).strip().lower(),
-        'mon_hoc_yeu_thich': str(current_user.favorite_subjects).strip().lower(),
-        'phuong_phap_hoc_yeu_thich': str(current_user.preferred_learning_method).strip().lower()
+        'truong_hoc_hien_tai': str(user.school).strip().lower(),
+        'khoi_lop_hien_tai': str(user.current_grade).strip().lower(),
+        'muc_tieu_hoc': str(user.learning_goals).strip().lower(),
+        'mon_hoc_yeu_thich': str(user.favorite_subjects).strip().lower(),
+        'phuong_phap_hoc_yeu_thich': str(user.preferred_learning_method).strip().lower()
     }
     
     # Convert user features to model input format
@@ -247,7 +247,7 @@ def recommendations():
     grade_filter_option = request.args.get('grade_filter', 'all')  # 'all' hoặc 'matching'
     
     # Get study plan items to check which items are already in the plan
-    study_plan_items = StudyPlanItem.query.filter_by(user_id=current_user.id).all()
+    study_plan_items = StudyPlanItem.query.filter_by(user_id=user.id).all()
     items_in_plan = {
         'course': [int(item.item_id) for item in study_plan_items if item.item_type == 'course'],
         'tutor': [int(item.item_id) for item in study_plan_items if item.item_type == 'tutor'],
@@ -335,7 +335,7 @@ def recommendations():
         
         # Kiểm tra chính xác nếu khối lớp người dùng có trong danh sách khối lớp của khóa học
         for grade in course_grades:
-            if normalize_grade(grade) == normalize_grade(current_user.current_grade):
+            if normalize_grade(grade) == normalize_grade(user.current_grade):
                 course.grade_match = True
                 grade_match = True
                 break
@@ -353,7 +353,7 @@ def recommendations():
         # Check if subject matches user's favorite subjects
         subject_match = False
         course_subject = course.subject.lower().replace("hoá", "hóa").strip()
-        user_subjects = [s.lower().replace("hoá", "hóa").strip() for s in current_user.favorite_subjects.split(',')]
+        user_subjects = [s.lower().replace("hoá", "hóa").strip() for s in user.favorite_subjects.split(',')]
         
         if course_subject in user_subjects:
             base_score *= 180.0
@@ -361,7 +361,7 @@ def recommendations():
         else:
             base_score *= 0.00001
             
-        if course.teaching_method == current_user.preferred_learning_method:
+        if course.teaching_method == user.preferred_learning_method:
             base_score *= 1.2
         
         if apply_filters(course, filters):
@@ -385,7 +385,7 @@ def recommendations():
         
         # Kiểm tra chính xác nếu khối lớp người dùng có trong danh sách khối lớp của gia sư
         for grade in tutor_grades:
-            if normalize_grade(grade) == normalize_grade(current_user.current_grade):
+            if normalize_grade(grade) == normalize_grade(user.current_grade):
                 tutor.grade_match = True
                 grade_match = True
                 break
@@ -403,7 +403,7 @@ def recommendations():
         # Check if subject matches user's favorite subjects
         subject_match = False
         tutor_subject = tutor.subject.lower().replace("hoá", "hóa").strip()
-        user_subjects = [s.lower().replace("hoá", "hóa").strip() for s in current_user.favorite_subjects.split(',')]
+        user_subjects = [s.lower().replace("hoá", "hóa").strip() for s in user.favorite_subjects.split(',')]
         
         if tutor_subject in user_subjects:
             base_score *= 180.0
@@ -411,7 +411,7 @@ def recommendations():
         else:
             base_score *= 0.00001
             
-        if tutor.teaching_method == current_user.preferred_learning_method:
+        if tutor.teaching_method == user.preferred_learning_method:
             base_score *= 1.2
         
         if apply_filters(tutor, filters):
@@ -442,7 +442,7 @@ def recommendations():
         
         # Kiểm tra chính xác nếu khối lớp người dùng có trong danh sách khối lớp của tài liệu
         for grade in material_grades:
-            if normalize_grade(grade) == normalize_grade(current_user.current_grade):
+            if normalize_grade(grade) == normalize_grade(user.current_grade):
                 material.grade_match = True
                 grade_match = True
                 break
@@ -460,7 +460,7 @@ def recommendations():
         # Check if subject matches user's favorite subjects
         subject_match = False
         material_subject = material.subject.lower().replace("hoá", "hóa").strip()
-        user_subjects = [s.lower().replace("hoá", "hóa").strip() for s in current_user.favorite_subjects.split(',')]
+        user_subjects = [s.lower().replace("hoá", "hóa").strip() for s in user.favorite_subjects.split(',')]
         
         if material_subject in user_subjects:
             base_score *= 180.0
@@ -476,7 +476,7 @@ def recommendations():
             recommendations['materials'].append((material, base_score))
     
     # Thêm debug mới để kiểm tra xem các item có khớp grade hay không
-    print(f"\nĐang kiểm tra đề xuất với khối lớp hiện tại: {current_user.current_grade} (Chuẩn hóa: {normalize_grade(current_user.current_grade)})")
+    print(f"\nĐang kiểm tra đề xuất với khối lớp hiện tại: {user.current_grade} (Chuẩn hóa: {normalize_grade(user.current_grade)})")
     
     # In ví dụ về việc chuẩn hóa khối lớp
     print(f"Ví dụ chuẩn hóa khối lớp:")
@@ -486,7 +486,7 @@ def recommendations():
     # Hiển thị một số khóa học và khối lớp tương ứng để kiểm tra
     print("\nKiểm tra khớp lớp:")
     for i, course in enumerate(all_courses[:3]):
-        user_grade = normalize_grade(current_user.current_grade)
+        user_grade = normalize_grade(user.current_grade)
         course_grades = [normalize_grade(g) for g in split_grades(course.grade_level)]
         match = user_grade in course_grades
         print(f"  Khóa học {course.name}: user_grade={user_grade}, course_grades={course_grades}, khớp={match}")
@@ -648,10 +648,11 @@ def apply_filters(item, filters):
 @app.route('/study_plan', methods=['GET', 'POST'])
 @jwt_required
 def study_plan():
+    user = get_current_user()
     # Get or create study plan for user
-    study_plan = current_user.study_plan
+    study_plan = user.study_plan
     if not study_plan:
-        study_plan = StudyPlan(user_id=current_user.id)
+        study_plan = StudyPlan(user_id=user.id)
         db.session.add(study_plan)
         db.session.commit()
 
@@ -824,7 +825,7 @@ def study_plan():
             study_plan_item_id = request.form.get('study_plan_item_id')
             if study_plan_item_id:
                 # Remove the item from study plan items
-                item = StudyPlanItem.query.filter_by(id=study_plan_item_id, user_id=current_user.id).first()
+                item = StudyPlanItem.query.filter_by(id=study_plan_item_id, user_id=user.id).first()
                 if item:
                     db.session.delete(item)
                     db.session.commit()
@@ -843,7 +844,7 @@ def study_plan():
     materials = Material.query.all()
     
     # Get study plan items
-    study_plan_items = StudyPlanItem.query.filter_by(user_id=current_user.id).all()
+    study_plan_items = StudyPlanItem.query.filter_by(user_id=user.id).all()
 
     # Sort items by time
     sorted_items = sort_items_by_time(selected_courses, selected_tutors, selected_materials)
@@ -886,7 +887,7 @@ def add_to_study_plan():
 
         # Kiểm tra xem item đã tồn tại trong study plan chưa
         existing_item = StudyPlanItem.query.filter_by(
-            user_id=current_user.id,
+            user_id=user.id,
             item_type=item_type,
             item_id=item_id
         ).first()
@@ -896,7 +897,7 @@ def add_to_study_plan():
 
         # Create a new study plan item
         study_plan_item = StudyPlanItem(
-            user_id=current_user.id,
+            user_id=user.id,
             item_type=item_type,
             item_id=item_id,
             name=name,
@@ -1330,6 +1331,7 @@ def add_test_data():
 @app.route('/feedback', methods=['GET', 'POST'])
 @jwt_required
 def feedback():
+    user = get_current_user()
     success = False
     
     if request.method == 'POST':
@@ -1339,7 +1341,7 @@ def feedback():
         
         if feedback_type and content and rating:
             new_feedback = Feedback(
-                user_id=current_user.id,
+                user_id=user.id,
                 feedback_type=feedback_type,
                 content=content,
                 rating=int(rating)
