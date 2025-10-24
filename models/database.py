@@ -18,6 +18,10 @@ class User(UserMixin, db.Model):
     learning_goals = db.Column(db.String(200))
     preferred_learning_method = db.Column(db.String(200))
     
+    # Password reset
+    reset_token = db.Column(db.String(100))
+    reset_token_expires = db.Column(db.DateTime)
+    
     # Relationships
     study_plan = db.relationship('StudyPlan', backref='user', uselist=False, cascade='all, delete-orphan')
     feedback = db.relationship('Feedback', backref='user', lazy=True, cascade='all, delete-orphan')

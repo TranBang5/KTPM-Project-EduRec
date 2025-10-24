@@ -1,4 +1,4 @@
-from flask import Flask, render_template, request, redirect, url_for, flash, jsonify
+from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, g
 from flask_login import LoginManager, login_user, logout_user, login_required, current_user
 from werkzeug.security import generate_password_hash, check_password_hash
 from models.database import db, User, Course, Tutor, Material, StudyPlan, SelectedCourse, SelectedTutor, SelectedMaterial, Feedback
@@ -8,18 +8,28 @@ import tensorflow as tf
 import pandas as pd
 import numpy as np
 import os
+import sys
+sys.stdout.reconfigure(encoding='utf-8')
 from dotenv import load_dotenv
 import time
 from sqlalchemy.exc import OperationalError
 import re
 import json
+import jwt
+from datetime import datetime, timedelta
+from functools import wraps
 
 load_dotenv()
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'your-secret-key')
-app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URL', 'mysql+mysqlconnector://user:password@db:3306/recommendation_db')
+app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URL', 'sqlite:///recommendation.db')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+
+# JWT Configuration
+app.config['JWT_SECRET_KEY'] = os.getenv('JWT_SECRET_KEY', 'jwt-secret-key-change-in-production')
+app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(hours=1)
+app.config['JWT_REFRESH_TOKEN_EXPIRES'] = timedelta(days=7)
 
 # Model weights and BruteForce data paths
 WEIGHTS_DIR = os.getenv('WEIGHTS_DIR', './checkpoints')
@@ -30,6 +40,108 @@ db.init_app(app)
 login_manager = LoginManager()
 login_manager.init_app(app)
 login_manager.login_view = 'login'
+
+# JWT Helper Functions
+def generate_jwt_token(user_id, token_type='access'):
+    """Generate JWT token"""
+    if token_type == 'access':
+        expires = datetime.utcnow() + app.config['JWT_ACCESS_TOKEN_EXPIRES']
+    else:  # refresh
+        expires = datetime.utcnow() + app.config['JWT_REFRESH_TOKEN_EXPIRES']
+    
+    payload = {
+        'user_id': user_id,
+        'type': token_type,
+        'exp': expires,
+        'iat': datetime.utcnow()
+    }
+    
+    return jwt.encode(payload, app.config['JWT_SECRET_KEY'], algorithm='HS256')
+
+def verify_jwt_token(token):
+    """Verify JWT token"""
+    try:
+        payload = jwt.decode(token, app.config['JWT_SECRET_KEY'], algorithms=['HS256'])
+        return payload
+    except jwt.ExpiredSignatureError:
+        return None
+    except jwt.InvalidTokenError:
+        return None
+
+def extract_token_from_header(auth_header):
+    """Extract token from Authorization header"""
+    if not auth_header:
+        return None
+    try:
+        return auth_header.split(' ')[1]  # Bearer <token>
+    except IndexError:
+        return None
+
+def jwt_required(f):
+    """Decorator to require JWT authentication"""
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        auth_header = request.headers.get('Authorization')
+        token = extract_token_from_header(auth_header)
+        
+        if not token:
+            return jsonify({'error': 'Token is missing'}), 401
+        
+        payload = verify_jwt_token(token)
+        if not payload or payload.get('type') != 'access':
+            return jsonify({'error': 'Invalid token'}), 401
+        
+        # Store user info in Flask g object
+        user = User.query.get(payload['user_id'])
+        if not user:
+            return jsonify({'error': 'User not found'}), 401
+        
+        g.current_user = user
+        g.current_user_id = user.id
+        
+        return f(*args, **kwargs)
+    
+    return decorated_function
+
+def optional_jwt(f):
+    """Decorator for optional JWT authentication"""
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        auth_header = request.headers.get('Authorization')
+        token = extract_token_from_header(auth_header)
+        
+        if token:
+            payload = verify_jwt_token(token)
+            if payload and payload.get('type') == 'access':
+                user = User.query.get(payload['user_id'])
+                if user:
+                    g.current_user = user
+                    g.current_user_id = user.id
+                else:
+                    g.current_user = None
+                    g.current_user_id = None
+            else:
+                g.current_user = None
+                g.current_user_id = None
+        else:
+            g.current_user = None
+            g.current_user_id = None
+        
+        return f(*args, **kwargs)
+    
+    return decorated_function
+
+def get_current_user():
+    """Get current user from g object"""
+    return getattr(g, 'current_user', None)
+
+def get_current_user_id():
+    """Get current user ID from g object"""
+    return getattr(g, 'current_user_id', None)
+
+def is_jwt_authenticated():
+    """Check if user is JWT authenticated"""
+    return get_current_user() is not None
 
 # Load preprocessed data and model
 print("Đang tải dữ liệu đã xử lý trước...")
@@ -122,6 +234,10 @@ def login():
 def logout():
     logout_user()
     return redirect(url_for('index'))
+
+# Register Auth Service Blueprint
+from services.auth import auth_bp
+app.register_blueprint(auth_bp)
 
 @app.route('/profile', methods=['GET', 'POST'])
 @login_required
@@ -1290,6 +1406,16 @@ def feedback():
     feedbacks = Feedback.query.filter_by(user_id=current_user.id).order_by(Feedback.created_at.desc()).all()
     
     return render_template('feedback.html', success=success, feedbacks=feedbacks)
+
+@app.route('/health')
+def health_check():
+    """Health check endpoint"""
+    return jsonify({
+        'status': 'healthy',
+        'service': 'main-app',
+        'jwt_enabled': True,
+        'features': ['authentication', 'recommendation', 'study_plan']
+    }), 200
 
 if __name__ == '__main__':
     with app.app_context():
