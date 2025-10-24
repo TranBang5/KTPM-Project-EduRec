@@ -1,5 +1,5 @@
-from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, g
-from flask_login import LoginManager, login_user, logout_user, login_required, current_user
+from flask import Flask, render_template, request, redirect, url_for, flash, jsonify
+
 from werkzeug.security import generate_password_hash, check_password_hash
 from models.database import db, User, Course, Tutor, Material, StudyPlan, SelectedCourse, SelectedTutor, SelectedMaterial, Feedback
 from models.models import StudyPlanItem
@@ -37,9 +37,8 @@ BRUTEFORCE_DATA_PATH = os.getenv('BRUTEFORCE_DATA_PATH', './bruteforce_data.npz'
 
 # Initialize extensions
 db.init_app(app)
-login_manager = LoginManager()
-login_manager.init_app(app)
-login_manager.login_view = 'login'
+# Removed Flask-Login - using JWT instead
+from services.auth.middleware import jwt_required, optional_jwt, get_current_user, get_current_user_id, is_jwt_authenticated
 
 # Load preprocessed data and model
 print("Đang tải dữ liệu đã xử lý trước...")
@@ -72,66 +71,103 @@ if latest_checkpoint:
 else:
     print("Cảnh báo: Không tìm thấy checkpoint nào trong", WEIGHTS_DIR)
 
-@login_manager.user_loader
-def load_user(user_id):
-    return User.query.get(int(user_id))
-
 @app.route('/')
 def index():
-    if current_user.is_authenticated:
-        return redirect(url_for('dashboard'))
+    # Check JWT token from cookie
+    jwt_token = request.cookies.get('jwt_token')
+    if jwt_token:
+        try:
+            from services.auth.jwt_utils import verify_jwt_token
+            payload = verify_jwt_token(jwt_token)
+            if payload and payload.get('type') == 'access':
+                return redirect(url_for('dashboard'))
+        except:
+            pass
     return render_template('index.html')
 
 @app.route('/register', methods=['GET', 'POST'])
 def register():
     if request.method == 'POST':
-        full_name = request.form['full_name']
-        email = request.form['email']
-        password = request.form['password']
-        school = request.form.get('school')
-        current_grade = request.form.get('current_grade')
-        learning_goals = request.form.get('learning_goals')
-        favorite_subjects = request.form.get('favorite_subjects')
-        preferred_learning_method = request.form.get('preferred_learning_method')
+        # Gửi request tới Auth Service
+        import requests
+        auth_data = {
+            'full_name': request.form['full_name'],
+            'email': request.form['email'],
+            'password': request.form['password'],
+            'school': request.form.get('school'),
+            'current_grade': request.form.get('current_grade'),
+            'learning_goals': request.form.get('learning_goals'),
+            'favorite_subjects': request.form.get('favorite_subjects'),
+            'preferred_learning_method': request.form.get('preferred_learning_method')
+        }
         
-        if User.query.filter_by(email=email).first():
-            flash('Email already exists')
-            return redirect(url_for('register'))
+        try:
+            response = requests.post('http://localhost:5000/auth/register', json=auth_data)
+            if response.status_code == 201:
+                flash('Registration successful! Please log in.')
+                return redirect(url_for('login'))
+            else:
+                error_data = response.json()
+                flash(error_data.get('error', 'Registration failed'))
+        except Exception as e:
+            flash(f'Error: {str(e)}')
         
-        hashed_password = generate_password_hash(password, method='pbkdf2:sha256')
-        new_user = User(
-            full_name=full_name,
-            email=email,
-            password_hash=hashed_password,
-            school=school,
-            current_grade=current_grade,
-            learning_goals=learning_goals,
-            favorite_subjects=favorite_subjects,
-            preferred_learning_method=preferred_learning_method
-        )
-        db.session.add(new_user)
-        db.session.commit()
-        flash('Registration successful! Please log in.')
-        return redirect(url_for('login'))
+        return redirect(url_for('register'))
+    
     return render_template('register.html')
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
     if request.method == 'POST':
-        email = request.form['email']
-        password = request.form['password']
-        user = User.query.filter_by(email=email).first()
-        if user and check_password_hash(user.password_hash, password):
-            login_user(user)
-            return redirect(url_for('profile'))
-        flash('Invalid email or password')
+        # Gửi request tới Auth Service
+        import requests
+        auth_data = {
+            'email': request.form['email'],
+            'password': request.form['password']
+        }
+        
+        try:
+            response = requests.post('http://localhost:5000/auth/login', json=auth_data)
+            if response.status_code == 200:
+                # Lưu JWT token vào cookie
+                token_data = response.json()
+                resp = redirect(url_for('profile'))
+                resp.set_cookie('jwt_token', token_data['access_token'], httponly=True, secure=True, samesite='Lax')
+                resp.set_cookie('refresh_token', token_data['refresh_token'], httponly=True, secure=True, samesite='Lax')
+                flash('Login successful!')
+                return resp
+            
+            # Handle error response properly
+            if response.status_code != 200:
+                try:
+                    error_data = response.json()
+                    flash(error_data.get('error', 'Invalid email or password'))
+                except:
+                    flash('Login failed')
+        except Exception as e:
+            flash(f'Error: {str(e)}')
+    
     return render_template('login.html')
 
 @app.route('/logout')
-@login_required
 def logout():
-    logout_user()
-    return redirect(url_for('index'))
+    # Gửi request tới Auth Service để logout
+    import requests
+    try:
+        jwt_token = request.cookies.get('jwt_token')
+        if jwt_token:
+            requests.post('http://localhost:5000/auth/logout', 
+                        json={'access_token': jwt_token})
+        
+    except Exception as e:
+        print(f"Logout error: {e}")
+    
+    # Xóa tokens khỏi cookies
+    resp = redirect(url_for('index'))
+    resp.set_cookie('jwt_token', '', expires=0)
+    resp.set_cookie('refresh_token', '', expires=0)
+    flash('Logged out successfully!')
+    return resp
 
 # Register Auth Service Blueprint
 from services.auth import auth_bp
@@ -141,19 +177,26 @@ app.register_blueprint(auth_bp)
 from services.profile import profile_bp
 app.register_blueprint(profile_bp)
 
+# Register Catalog Service Blueprint
+from services.catalog import catalog_bp
+app.register_blueprint(catalog_bp)
+
+
 # Profile Service is now handled by services/profile Blueprint
 
 @app.route('/profile', methods=['GET', 'POST'])
-@login_required
+@jwt_required
 def profile():
     if request.method == 'POST':
-        # Get JWT token for API call
-        from services.auth.jwt_utils import generate_jwt_token
-        token = generate_jwt_token(current_user.id)
+        # Get JWT token from cookie
+        jwt_token = request.cookies.get('jwt_token')
+        if not jwt_token:
+            flash('Please login first')
+            return redirect(url_for('login'))
         
         # Prepare data for Profile Service API
         profile_data = {
-            'full_name': current_user.full_name,
+            'full_name': get_current_user().full_name,
             'school': request.form.get('school'),
             'current_grade': request.form.get('current_grade'),
             'favorite_subjects': request.form.get('favorite_subjects'),
@@ -167,18 +210,11 @@ def profile():
             response = requests.put(
                 'http://localhost:5000/api/profile',
                 json=profile_data,
-                headers={'Authorization': f'Bearer {token}'}
+                headers={'Authorization': f'Bearer {jwt_token}'}
             )
             
             if response.status_code == 200:
                 flash('Profile updated successfully')
-                # Update local user object
-                current_user.school = profile_data['school']
-                current_user.current_grade = profile_data['current_grade']
-                current_user.favorite_subjects = profile_data['favorite_subjects']
-                current_user.learning_goals = profile_data['learning_goals']
-                current_user.preferred_learning_method = profile_data['preferred_learning_method']
-                db.session.commit()
             else:
                 flash('Failed to update profile')
         except Exception as e:
@@ -186,12 +222,13 @@ def profile():
         
         return redirect(url_for('profile'))
     
-    return render_template('profile.html', user=current_user)
+    return render_template('profile.html', user=get_current_user())
 
 @app.route('/recommendations', methods=['GET', 'POST'])
-@login_required
+@jwt_required
 def recommendations():
-    if not all([current_user.school, current_user.current_grade, current_user.favorite_subjects, current_user.learning_goals]):
+    user = get_current_user()
+    if not all([user.school, user.current_grade, user.favorite_subjects, user.learning_goals]):
         flash('Vui lòng hoàn thành hồ sơ của bạn trước khi xem đề xuất')
         return redirect(url_for('profile'))
     
@@ -633,7 +670,7 @@ def apply_filters(item, filters):
     return True
 
 @app.route('/study_plan', methods=['GET', 'POST'])
-@login_required
+@jwt_required
 def study_plan():
     # Get or create study plan for user
     study_plan = current_user.study_plan
@@ -852,7 +889,7 @@ def study_plan():
                          sorted_items=sorted_items)
 
 @app.route('/study_plan/add', methods=['POST'])
-@login_required
+@jwt_required
 def add_to_study_plan():
     try:
         item_type = request.form.get('type')
@@ -1062,7 +1099,7 @@ def sort_items_by_time(selected_courses, selected_tutors, selected_materials):
     return sorted(items, key=lambda x: (x['day'], x['start'], {'course': 0, 'tutor': 1, 'material': 2}[x['type']]))
 
 @app.route('/api/tutor/<int:tutor_id>/time-slots')
-@login_required
+@jwt_required
 def get_tutor_time_slots(tutor_id):
     tutor = Tutor.query.get_or_404(tutor_id)
     time_slots = []
@@ -1090,7 +1127,7 @@ def init_db():
             return False
 
 @app.route('/dashboard')
-@login_required
+@jwt_required
 def dashboard():
     # Get user's study plan items
     study_plan_items = StudyPlanItem.query.filter_by(user_id=current_user.id).all()
@@ -1107,7 +1144,7 @@ def dashboard():
                          recommendations=recommendations)
 
 @app.route('/check_data')
-@login_required
+@jwt_required
 def check_data():
     courses = Course.query.all()
     tutors = Tutor.query.all()
@@ -1138,7 +1175,7 @@ def check_data():
     })
 
 @app.route('/add_test_data')
-@login_required
+@jwt_required
 def add_test_data():
     # Add test courses
     courses = [
@@ -1314,7 +1351,7 @@ def add_test_data():
         return jsonify({'success': False, 'message': str(e)})
 
 @app.route('/feedback', methods=['GET', 'POST'])
-@login_required
+@jwt_required
 def feedback():
     success = False
     
@@ -1349,10 +1386,11 @@ def health_check():
         'status': 'healthy',
         'service': 'main-app',
         'jwt_enabled': True,
-        'features': ['authentication', 'recommendation', 'study_plan', 'profile_management'],
+        'features': ['authentication', 'recommendation', 'study_plan', 'profile_management', 'catalog_management'],
         'microservices': {
             'auth-service': '/auth/health',
-            'profile-service': '/api/profile/health'
+            'profile-service': '/api/profile/health',
+            'catalog-service': '/api/catalog/health'
         }
     }), 200
 
