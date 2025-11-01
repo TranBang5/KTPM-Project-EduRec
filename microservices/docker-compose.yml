@@ -1,0 +1,53 @@
+version: '3.8'
+
+services:
+  # API Gateway
+  api-gateway:
+    build: ./api_gateway
+    ports:
+      - "5000:5000"
+    environment:
+      - RECOMMENDATION_SERVICE_URL=http://recommendation-service:5001
+      - STUDY_PLAN_SERVICE_URL=http://study-plan-service:5002
+      - FEEDBACK_SERVICE_URL=http://feedback-service:5003
+    depends_on:
+      - recommendation-service
+      - study-plan-service
+      - feedback-service
+    networks:
+      - microservices-network
+
+  # Recommendation Service
+  recommendation-service:
+    build: ./recommendation_service
+    ports:
+      - "5001:5001"
+    environment:
+      - WEIGHTS_DIR=/app/checkpoints
+      - BRUTEFORCE_DATA_PATH=/app/bruteforce_data.npz
+    volumes:
+      - ../checkpoints:/app/checkpoints
+      - ../data:/app/data
+      - ../bruteforce_data.npz:/app/bruteforce_data.npz
+    networks:
+      - microservices-network
+
+  # Study Plan Service
+  study-plan-service:
+    build: ./study_plan_service
+    ports:
+      - "5002:5002"
+    networks:
+      - microservices-network
+
+  # Feedback Service
+  feedback-service:
+    build: ./feedback_service
+    ports:
+      - "5003:5003"
+    networks:
+      - microservices-network
+
+networks:
+  microservices-network:
+    driver: bridge
