@@ -1,20 +1,65 @@
-from flask import request, jsonify, current_app
+from flask import Flask, request, jsonify, current_app
 from werkzeug.security import generate_password_hash, check_password_hash
 from models.database import db, User
-from .jwt_utils import generate_jwt_token, verify_jwt_token
 from datetime import datetime, timedelta
+import jwt
 import secrets
 import string
 import smtplib
+import os
+import sys
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-from . import auth_bp
+import logging
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+app = Flask(__name__)
+
+# Configuration
+app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'your-secret-key')
+app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URL', 'mysql+mysqlconnector://user:password@db:3306/recommendation_db')
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+app.config['JWT_SECRET_KEY'] = os.getenv('JWT_SECRET_KEY', app.config['SECRET_KEY'])
+app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(hours=1)
+app.config['JWT_REFRESH_TOKEN_EXPIRES'] = timedelta(days=30)
+
+# Initialize database
+db.init_app(app)
 
 # Email configuration
-SMTP_SERVER = 'smtp.gmail.com'
-SMTP_PORT = 587
-SMTP_USERNAME = ''  # Set in environment
-SMTP_PASSWORD = ''  # Set in environment
+SMTP_SERVER = os.getenv('SMTP_SERVER', 'smtp.gmail.com')
+SMTP_PORT = int(os.getenv('SMTP_PORT', '587'))
+SMTP_USERNAME = os.getenv('SMTP_USERNAME', '')
+SMTP_PASSWORD = os.getenv('SMTP_PASSWORD', '')
+
+def generate_jwt_token(user_id, token_type='access'):
+    """Generate JWT token"""
+    if token_type == 'access':
+        expires = datetime.utcnow() + app.config['JWT_ACCESS_TOKEN_EXPIRES']
+    else:  # refresh
+        expires = datetime.utcnow() + app.config['JWT_REFRESH_TOKEN_EXPIRES']
+    
+    payload = {
+        'user_id': user_id,
+        'type': token_type,
+        'exp': expires,
+        'iat': datetime.utcnow()
+    }
+    
+    return jwt.encode(payload, app.config['JWT_SECRET_KEY'], algorithm='HS256')
+
+def verify_jwt_token(token):
+    """Verify JWT token"""
+    try:
+        payload = jwt.decode(token, app.config['JWT_SECRET_KEY'], algorithms=['HS256'])
+        return payload
+    except jwt.ExpiredSignatureError:
+        return None
+    except jwt.InvalidTokenError:
+        return None
 
 def generate_reset_token():
     """Generate secure reset token"""
@@ -23,6 +68,10 @@ def generate_reset_token():
 def send_reset_email(email, reset_token):
     """Send password reset email"""
     try:
+        if not SMTP_USERNAME or not SMTP_PASSWORD:
+            logger.warning("SMTP credentials not configured, skipping email send")
+            return True  # Return True for development
+        
         msg = MIMEMultipart()
         msg['From'] = SMTP_USERNAME
         msg['To'] = email
@@ -49,10 +98,34 @@ def send_reset_email(email, reset_token):
         
         return True
     except Exception as e:
-        print(f"Error sending email: {e}")
+        logger.error(f"Error sending email: {e}")
         return False
 
-@auth_bp.route('/register', methods=['POST'])
+@app.route('/', methods=['GET'])
+def index():
+    """Root endpoint for auth service"""
+    return jsonify({
+        'service': 'auth-service',
+        'status': 'running',
+        'description': 'Authentication Service for user registration, login, and JWT token management',
+        'available_endpoints': {
+            'health': '/health',
+            'register': '/auth/register (POST)',
+            'login': '/auth/login (POST)',
+            'refresh': '/auth/refresh (POST)',
+            'forgot_password': '/auth/forgot-password (POST)',
+            'reset_password': '/auth/reset-password (POST)',
+            'verify_token': '/auth/verify-token (POST)',
+            'profile': '/auth/profile (GET, PUT)'
+        }
+    }), 200
+
+@app.route('/health', methods=['GET'])
+def health_check():
+    """Health check endpoint"""
+    return jsonify({'status': 'healthy', 'service': 'auth-service'}), 200
+
+@app.route('/auth/register', methods=['POST'])
 def register():
     """User registration"""
     data = request.get_json()
@@ -100,9 +173,10 @@ def register():
         
     except Exception as e:
         db.session.rollback()
+        logger.error(f"Registration error: {str(e)}")
         return jsonify({'error': 'Registration failed'}), 500
 
-@auth_bp.route('/login', methods=['POST'])
+@app.route('/auth/login', methods=['POST'])
 def login():
     """User login"""
     data = request.get_json()
@@ -130,7 +204,7 @@ def login():
         }
     }), 200
 
-@auth_bp.route('/refresh', methods=['POST'])
+@app.route('/auth/refresh', methods=['POST'])
 def refresh_token():
     """Refresh access token"""
     data = request.get_json()
@@ -151,7 +225,7 @@ def refresh_token():
         'access_token': new_access_token
     }), 200
 
-@auth_bp.route('/forgot-password', methods=['POST'])
+@app.route('/auth/forgot-password', methods=['POST'])
 def forgot_password():
     """Send password reset email"""
     data = request.get_json()
@@ -177,7 +251,7 @@ def forgot_password():
     else:
         return jsonify({'error': 'Failed to send reset email'}), 500
 
-@auth_bp.route('/reset-password', methods=['POST'])
+@app.route('/auth/reset-password', methods=['POST'])
 def reset_password():
     """Reset password with token"""
     data = request.get_json()
@@ -200,7 +274,7 @@ def reset_password():
     
     return jsonify({'message': 'Password reset successfully'}), 200
 
-@auth_bp.route('/verify-token', methods=['POST'])
+@app.route('/auth/verify-token', methods=['POST'])
 def verify_token():
     """Verify JWT token"""
     data = request.get_json()
@@ -227,7 +301,7 @@ def verify_token():
         }
     }), 200
 
-@auth_bp.route('/profile', methods=['GET'])
+@app.route('/auth/profile', methods=['GET'])
 def get_profile():
     """Get user profile"""
     # Get token from Authorization header
@@ -254,10 +328,10 @@ def get_profile():
         'learning_goals': user.learning_goals,
         'favorite_subjects': user.favorite_subjects,
         'preferred_learning_method': user.preferred_learning_method,
-        'created_at': user.created_at.isoformat()
+        'created_at': user.created_at.isoformat() if user.created_at else None
     }), 200
 
-@auth_bp.route('/profile', methods=['PUT'])
+@app.route('/auth/profile', methods=['PUT'])
 def update_profile():
     """Update user profile"""
     # Get token from Authorization header
@@ -296,9 +370,28 @@ def update_profile():
         return jsonify({'message': 'Profile updated successfully'}), 200
     except Exception as e:
         db.session.rollback()
+        logger.error(f"Profile update error: {str(e)}")
         return jsonify({'error': 'Failed to update profile'}), 500
 
-@auth_bp.route('/health', methods=['GET'])
-def health_check():
-    """Health check endpoint"""
-    return jsonify({'status': 'healthy', 'service': 'auth-service'}), 200
+if __name__ == '__main__':
+    try:
+        logger.info("Initializing Auth Service...")
+        with app.app_context():
+            try:
+                db.create_all()
+                logger.info("Database tables created/verified successfully")
+            except Exception as db_error:
+                logger.warning(f"Database initialization warning: {str(db_error)}")
+                logger.info("Service will continue to start. Database connection will be established on first request.")
+        
+        logger.info(f"Auth Service starting on port 5004")
+        logger.info(f"Database URL: {app.config.get('SQLALCHEMY_DATABASE_URI', 'Not set')[:50]}...")
+        
+        # Disable debug mode in Docker to prevent auto-restart
+        debug_mode = os.getenv('FLASK_DEBUG', 'False').lower() == 'true'
+        app.run(host='0.0.0.0', port=5004, debug=debug_mode)
+    except Exception as e:
+        logger.error(f"Failed to start Auth Service: {str(e)}")
+        import traceback
+        logger.error(traceback.format_exc())
+        sys.exit(1)

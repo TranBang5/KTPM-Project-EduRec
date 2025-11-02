@@ -43,6 +43,33 @@ def setup_recommendation_service():
     
     print("Recommendation Service setup complete!")
 
+def setup_auth_service():
+    """Set up auth service with necessary files"""
+    print("Setting up Auth Service...")
+    
+    # Copy models directory
+    copy_directory_if_exists("../models", "auth_service/models")
+    
+    print("Auth Service setup complete!")
+
+def setup_catalog_service():
+    """Set up catalog service with necessary files"""
+    print("Setting up Catalog Service...")
+    
+    # Copy models directory
+    copy_directory_if_exists("../models", "catalog_service/models")
+    
+    print("Catalog Service setup complete!")
+
+def setup_profile_service():
+    """Set up profile service with necessary files"""
+    print("Setting up Profile Service...")
+    
+    # Copy models directory
+    copy_directory_if_exists("../models", "profile_service/models")
+    
+    print("Profile Service setup complete!")
+
 def setup_study_plan_service():
     """Set up study plan service"""
     print("Setting up Study Plan Service...")
@@ -67,11 +94,17 @@ def main():
     os.chdir(os.path.dirname(os.path.abspath(__file__)))
     
     # Set up each service
+    setup_auth_service()
+    print()
     setup_recommendation_service()
     print()
     setup_study_plan_service()
     print()
     setup_feedback_service()
+    print()
+    setup_catalog_service()
+    print()
+    setup_profile_service()
     print()
     setup_api_gateway()
     print()

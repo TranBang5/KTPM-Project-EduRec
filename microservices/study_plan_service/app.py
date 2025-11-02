@@ -3,6 +3,8 @@ from datetime import datetime
 import json
 import re
 import logging
+import os
+import sys
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -13,6 +15,24 @@ app = Flask(__name__)
 # In-memory storage for study plans (in production, use a database)
 study_plans = {}
 study_plan_items = {}
+
+@app.route('/', methods=['GET'])
+def index():
+    """Root endpoint for study plan service"""
+    return jsonify({
+        'service': 'study-plan-service',
+        'status': 'running',
+        'description': 'Study Plan Service for managing student study plans',
+        'available_endpoints': {
+            'health': '/health',
+            'create_plan': '/study-plans (POST)',
+            'get_plan': '/study-plans/<user_id> (GET)',
+            'add_item': '/study-plans/<user_id>/items (POST)',
+            'update_item': '/study-plans/<user_id>/items/<item_id> (PUT)',
+            'delete_item': '/study-plans/<user_id>/items/<item_id> (DELETE)',
+            'get_schedule': '/study-plans/<user_id>/schedule (GET)'
+        }
+    }), 200
 
 @app.route('/health', methods=['GET'])
 def health_check():
@@ -30,7 +50,11 @@ def create_study_plan():
         if not data or 'user_id' not in data:
             return jsonify({'error': 'user_id is required'}), 400
 
-        user_id = data['user_id']
+        # Convert user_id to int for consistency
+        try:
+            user_id = int(data['user_id'])
+        except (ValueError, TypeError):
+            return jsonify({'error': 'Invalid user_id'}), 400
         
         # Check if user already has a study plan
         if user_id in study_plans:
@@ -60,6 +84,12 @@ def create_study_plan():
 def get_study_plan(user_id):
     """Get study plan for a user"""
     try:
+        # Convert user_id from string to int to match add_study_plan_item
+        try:
+            user_id = int(user_id)
+        except (ValueError, TypeError):
+            return jsonify({'error': 'Invalid user_id'}), 400
+        
         if user_id not in study_plans:
             return jsonify({'error': 'Study plan not found'}), 404
 
@@ -77,22 +107,36 @@ def get_study_plan(user_id):
         return jsonify({'error': str(e)}), 500
 
 @app.route('/study-plans/<user_id>/items', methods=['POST'])
-def add_study_plan_item():
+def add_study_plan_item(user_id):
     """Add an item to study plan"""
     try:
         data = request.get_json()
         if not data:
             return jsonify({'error': 'No data provided'}), 400
 
-        required_fields = ['user_id', 'item_type', 'item_id', 'name', 'subject', 'grade']
+        # Use user_id from URL path, not from data
+        # Convert user_id from string to int if needed
+        try:
+            user_id = int(user_id)
+        except (ValueError, TypeError):
+            return jsonify({'error': 'Invalid user_id'}), 400
+
+        required_fields = ['item_type', 'item_id', 'name']
         for field in required_fields:
             if field not in data:
                 return jsonify({'error': f'{field} is required'}), 400
-
-        user_id = data['user_id']
         
+        # Auto-create study plan if it doesn't exist
         if user_id not in study_plans:
-            return jsonify({'error': 'Study plan not found'}), 404
+            logger.info(f"Auto-creating study plan for user {user_id}")
+            study_plan = {
+                'id': f"sp_{user_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+                'user_id': user_id,
+                'created_at': datetime.now().isoformat(),
+                'updated_at': datetime.now().isoformat()
+            }
+            study_plans[user_id] = study_plan
+            study_plan_items[user_id] = []
 
         # Check if item already exists
         existing_item = next(
@@ -111,10 +155,10 @@ def add_study_plan_item():
             'item_type': data['item_type'],
             'item_id': data['item_id'],
             'name': data['name'],
-            'subject': data['subject'],
-            'grade': data['grade'],
-            'method': data.get('method'),
-            'time_slots': data.get('time_slots'),
+            'subject': data.get('subject', ''),
+            'grade': data.get('grade', ''),
+            'method': data.get('method', ''),
+            'time_slots': data.get('time_slots', ''),
             'created_at': datetime.now().isoformat()
         }
 
@@ -136,6 +180,12 @@ def add_study_plan_item():
 def update_study_plan_item(user_id, item_id):
     """Update a study plan item"""
     try:
+        # Convert user_id from string to int
+        try:
+            user_id = int(user_id)
+        except (ValueError, TypeError):
+            return jsonify({'error': 'Invalid user_id'}), 400
+        
         data = request.get_json()
         if not data:
             return jsonify({'error': 'No data provided'}), 400
@@ -175,6 +225,12 @@ def update_study_plan_item(user_id, item_id):
 def delete_study_plan_item(user_id, item_id):
     """Delete a study plan item"""
     try:
+        # Convert user_id from string to int
+        try:
+            user_id = int(user_id)
+        except (ValueError, TypeError):
+            return jsonify({'error': 'Invalid user_id'}), 400
+        
         if user_id not in study_plans:
             return jsonify({'error': 'Study plan not found'}), 404
 
@@ -203,6 +259,12 @@ def delete_study_plan_item(user_id, item_id):
 def get_study_schedule(user_id):
     """Get sorted study schedule for a user"""
     try:
+        # Convert user_id from string to int
+        try:
+            user_id = int(user_id)
+        except (ValueError, TypeError):
+            return jsonify({'error': 'Invalid user_id'}), 400
+        
         if user_id not in study_plans:
             return jsonify({'error': 'Study plan not found'}), 404
 
@@ -284,9 +346,33 @@ def sort_items_by_time(items):
     for item in items:
         if item.get('time_slots'):
             try:
-                time_slots = json.loads(item['time_slots']) if isinstance(item['time_slots'], str) else item['time_slots']
+                time_slots_raw = item['time_slots']
+                
+                # Handle different formats: JSON array, string array, or single string
+                if isinstance(time_slots_raw, str):
+                    # Try to parse as JSON array first
+                    try:
+                        time_slots = json.loads(time_slots_raw)
+                        if not isinstance(time_slots, list):
+                            # If not a list, treat as single string
+                            time_slots = [time_slots_raw]
+                    except (json.JSONDecodeError, ValueError):
+                        # If not JSON, treat as single string or check if it's a valid time slot
+                        if time_slots_raw.strip():
+                            time_slots = [time_slots_raw]
+                        else:
+                            time_slots = []
+                elif isinstance(time_slots_raw, list):
+                    time_slots = time_slots_raw
+                else:
+                    time_slots = []
+                
+                # Process each time slot
                 for slot in time_slots:
-                    start, end, day = parse_time_slot(slot)
+                    if not slot or not isinstance(slot, str):
+                        continue
+                    
+                    start, end, day = parse_time_slot(slot.strip())
                     if start is not None:
                         sorted_items.append({
                             'item': item,
@@ -294,13 +380,25 @@ def sort_items_by_time(items):
                             'end': end,
                             'day': day,
                             'day_name': day_names.get(day, ""),
-                            'time_slot': slot
+                            'time_slot': slot.strip(),
+                            'type': item.get('item_type', '')
                         })
-            except (json.JSONDecodeError, TypeError) as e:
-                logger.error(f"Error parsing time slots for item {item['id']}: {e}")
+            except Exception as e:
+                logger.error(f"Error parsing time slots for item {item.get('id', 'unknown')}: {e}")
                 continue
 
     return sorted(sorted_items, key=lambda x: (x['day'], x['start']))
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5002, debug=True)
+    try:
+        logger.info("Initializing Study Plan Service...")
+        logger.info(f"Study Plan Service starting on port 5002")
+        
+        # Disable debug mode in Docker to prevent auto-restart
+        debug_mode = os.getenv('FLASK_DEBUG', 'False').lower() == 'true'
+        app.run(host='0.0.0.0', port=5002, debug=debug_mode)
+    except Exception as e:
+        logger.error(f"Failed to start Study Plan Service: {str(e)}")
+        import traceback
+        logger.error(traceback.format_exc())
+        sys.exit(1)

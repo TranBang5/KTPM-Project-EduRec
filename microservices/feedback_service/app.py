@@ -2,6 +2,8 @@ from flask import Flask, request, jsonify
 from datetime import datetime
 import logging
 import json
+import os
+import sys
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -12,6 +14,24 @@ app = Flask(__name__)
 # In-memory storage for feedback (in production, use a database)
 feedbacks = {}
 feedback_analytics = {}
+
+@app.route('/', methods=['GET'])
+def index():
+    """Root endpoint for feedback service"""
+    return jsonify({
+        'service': 'feedback-service',
+        'status': 'running',
+        'description': 'Feedback Service for collecting and analyzing user feedback',
+        'available_endpoints': {
+            'health': '/health',
+            'submit': '/feedback (POST)',
+            'get_user_feedback': '/feedback/<user_id> (GET)',
+            'update_feedback': '/feedback/<feedback_id> (PUT)',
+            'analytics': '/feedback/analytics (GET)',
+            'user_analytics': '/feedback/analytics/<user_id> (GET)',
+            'reports': '/feedback/reports (GET)'
+        }
+    }), 200
 
 @app.route('/health', methods=['GET'])
 def health_check():
@@ -291,4 +311,15 @@ def generate_feedback_report():
         return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5003, debug=True)
+    try:
+        logger.info("Initializing Feedback Service...")
+        logger.info(f"Feedback Service starting on port 5003")
+        
+        # Disable debug mode in Docker to prevent auto-restart
+        debug_mode = os.getenv('FLASK_DEBUG', 'False').lower() == 'true'
+        app.run(host='0.0.0.0', port=5003, debug=debug_mode)
+    except Exception as e:
+        logger.error(f"Failed to start Feedback Service: {str(e)}")
+        import traceback
+        logger.error(traceback.format_exc())
+        sys.exit(1)

@@ -181,11 +181,11 @@
                                                             <div class="d-flex justify-content-between align-items-center">
                                                                 <h6 class="card-title mb-1">
                                                                     {% if item.type == 'course' %}
-                                                                        <i class="fas fa-chalkboard-teacher text-primary"></i> {{ item.item.course.name }}
+                                                                        <i class="fas fa-chalkboard-teacher text-primary"></i> {{ item.item.name }}
                                                                     {% elif item.type == 'tutor' %}
-                                                                        <i class="fas fa-user-tie text-info"></i> {{ item.item.tutor.name }}
+                                                                        <i class="fas fa-user-tie text-info"></i> {{ item.item.name }}
                                                                     {% else %}
-                                                                        <i class="fas fa-book text-success"></i> {{ item.item.material.name }}
+                                                                        <i class="fas fa-book text-success"></i> {{ item.item.name }}
                                                                     {% endif %}
                                                                 </h6>
                                                                 <span class="badge bg-light text-dark">
@@ -195,21 +195,25 @@
                                                                         {% set end_hour = item.end//60 %}
                                                                         {% set end_min = item.end%60 %}
                                                                         {{ '%02d' % start_hour }}:{{ '%02d' % start_min if start_min > 0 else '00' }} - {{ '%02d' % end_hour }}:{{ '%02d' % end_min if end_min > 0 else '00' }}
-                                                                    {% elif item.type == 'course' %}
-                                                                        {{ item.item.time_slot|replace('thứ ' ~ item.day, '')|replace('thứ ' ~ item.day_name, '') }}
-                                                                    {% elif item.type == 'tutor' %}
-                                                                        {{ item.item.selected_time_slot|replace('thứ ' ~ item.day, '')|replace('thứ ' ~ item.day_name, '') }}
+                                                                    {% else %}
+                                                                        {% set time_str = item.time_slot %}
+                                                                        {% if 'thứ' in time_str.lower() %}
+                                                                            {% set parts = time_str.lower().split('thứ') %}
+                                                                            {{ parts[0].strip() if parts|length > 0 else time_str }}
+                                                                        {% else %}
+                                                                            {{ time_str }}
+                                                                        {% endif %}
                                                                     {% endif %}
                                                                 </span>
                                                             </div>
                                                             <p class="card-text mb-1">
                                                                 <small>
                                                                     {% if item.type == 'course' %}
-                                                                        <span class="text-primary">{{ item.item.course.subject }}</span> - {{ item.item.course.location }}
+                                                                        <span class="text-primary">{{ item.item.subject or 'N/A' }}</span>
                                                                     {% elif item.type == 'tutor' %}
-                                                                        <span class="text-info">{{ item.item.tutor.subject }}</span> - {{ item.item.tutor.teaching_method }}
+                                                                        <span class="text-info">{{ item.item.subject or 'N/A' }}</span> - {{ item.item.method or 'N/A' }}
                                                                     {% else %}
-                                                                        <span class="text-success">{{ item.item.material.subject }}</span> - {{ item.item.material.material_type }}
+                                                                        <span class="text-success">{{ item.item.subject or 'N/A' }}</span>
                                                                     {% endif %}
                                                                 </small>
                                                             </p>

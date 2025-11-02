@@ -1,50 +1,42 @@
 #!/bin/bash
 
-# Copy model files if they exist in /app (build context) to the current directory
-[ -f /app/subject_pca_model.pkl ] && cp /app/subject_pca_model.pkl . || echo "subject_pca_model.pkl not found"
-[ -f /app/grade_pca_model.pkl ] && cp /app/grade_pca_model.pkl . || echo "grade_pca_model.pkl not found"
+# Script to start the microservices system
+# Usage: ./start.sh [service_name]
 
-# Wait for MySQL to be ready
-echo "Waiting for MySQL to be ready..."
-while ! nc -z db 3306; do
-  sleep 1
-done
-echo "MySQL is ready!"
+echo "🚀 Starting Student Study Plan Recommendation System..."
 
-# Initialize database
-echo "Initializing database..."
-python -c "from app import app, init_db; app.app_context().push(); init_db()"
-
-# Check if data needs to be loaded
-echo "Checking if data needs to be loaded..."
-python -c "
-from app import app
-from models.database import db, Course, Tutor, Material
-with app.app_context():
-    course_count = Course.query.count()
-    tutor_count = Tutor.query.count()
-    material_count = Material.query.count()
-    if course_count == 0 and tutor_count == 0 and material_count == 0:
-        print('Database is empty, loading data...')
-        exit(1)
-    else:
-        print(f'Database already has data: {course_count} courses, {tutor_count} tutors, {material_count} materials')
-        exit(0)
-"
-
-# Load data if database is empty
-if [ $? -eq 1 ]; then
-    echo "Loading data..."
-    python load_data.py
-    if [ $? -ne 0 ]; then
-        echo "Error: Failed to load data"
-        exit 1
-    fi
-    echo "Data loaded successfully"
-else
-    echo "Skipping data load as database already has data"
+# Check if Docker is running
+if ! docker info > /dev/null 2>&1; then
+    echo "❌ Docker is not running. Please start Docker first."
+    exit 1
 fi
 
-# Start the Flask application
-echo "Starting Flask application..."
-python app.py 
+# Start services
+if [ -z "$1" ]; then
+    echo "📦 Starting all services..."
+    docker-compose up -d --build
+else
+    echo "📦 Starting service: $1"
+    docker-compose up -d --build "$1"
+fi
+
+# Wait for services to be ready
+echo "⏳ Waiting for services to be ready..."
+sleep 5
+
+# Check health
+echo "🔍 Checking service health..."
+curl -s http://localhost:5000/health | python -m json.tool || echo "API Gateway not ready yet"
+
+echo ""
+echo "✅ Services started!"
+echo ""
+echo "📋 Useful commands:"
+echo "  docker-compose ps          # Check status"
+echo "  docker-compose logs -f     # View logs"
+echo "  docker-compose down        # Stop services"
+echo ""
+echo "🌐 Access points:"
+echo "  Frontend: http://localhost:8080"
+echo "  API Gateway: http://localhost:5000"
+echo "  Health Check: http://localhost:5000/health"

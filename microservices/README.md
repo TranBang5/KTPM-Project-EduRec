@@ -43,28 +43,27 @@ Hệ thống Student Study Plan Recommendation đã được migrate từ kiến
 
 ## Cài đặt và Chạy
 
-### 1. Chuẩn bị
-```bash
-# Copy các file cần thiết
-python setup_services.py
-```
+### ⚠️ QUAN TRỌNG: Chạy từ Folder Root
 
-### 2. Chạy với Docker Compose
-```bash
-# Build và chạy tất cả services
-docker-compose up --build
+**Docker Compose nên chạy từ folder root của project**, không phải từ `microservices/`.
 
-# Chạy trong background
+### 1. Chạy với Docker Compose (từ folder root)
+
+```bash
+# Từ folder root của project
+cd ..  # Nếu đang ở trong microservices/
+
+# Windows (PowerShell)
+..\start.ps1
+
+# Linux/Mac
+../start.sh
+
+# Hoặc trực tiếp
 docker-compose up -d --build
-
-# Xem logs
-docker-compose logs -f
-
-# Dừng services
-docker-compose down
 ```
 
-### 3. Chạy từng service riêng lẻ
+### 2. Chạy từng service riêng lẻ (development)
 ```bash
 # Recommendation Service
 cd recommendation_service
