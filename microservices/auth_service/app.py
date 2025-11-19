@@ -1,6 +1,6 @@
 from flask import Flask, request, jsonify, current_app
 from werkzeug.security import generate_password_hash, check_password_hash
-from models.database import db, User
+from models import db, User
 from datetime import datetime, timedelta
 import jwt
 import secrets
@@ -20,7 +20,7 @@ app = Flask(__name__)
 
 # Configuration
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'your-secret-key')
-app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URL', 'mysql+mysqlconnector://user:password@db:3306/recommendation_db')
+app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URL', 'mysql+pymysql://user:password@auth-db:3306/auth_db')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['JWT_SECRET_KEY'] = os.getenv('JWT_SECRET_KEY', app.config['SECRET_KEY'])
 app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(hours=1)
@@ -123,7 +123,14 @@ def index():
 @app.route('/health', methods=['GET'])
 def health_check():
     """Health check endpoint"""
-    return jsonify({'status': 'healthy', 'service': 'auth-service'}), 200
+    try:
+        # Check database connection
+        with db.engine.connect() as conn:
+            conn.execute(db.text("SELECT 1"))
+        return jsonify({'status': 'healthy', 'service': 'auth-service'}), 200
+    except Exception as e:
+        logger.error(f"Health check failed: {str(e)}")
+        return jsonify({'status': 'unhealthy', 'service': 'auth-service', 'error': str(e)}), 503
 
 @app.route('/auth/register', methods=['POST'])
 def register():
@@ -377,12 +384,30 @@ if __name__ == '__main__':
     try:
         logger.info("Initializing Auth Service...")
         with app.app_context():
-            try:
-                db.create_all()
-                logger.info("Database tables created/verified successfully")
-            except Exception as db_error:
-                logger.warning(f"Database initialization warning: {str(db_error)}")
-                logger.info("Service will continue to start. Database connection will be established on first request.")
+            # Retry database connection and table creation
+            max_retries = 5
+            retry_delay = 2
+            for attempt in range(max_retries):
+                try:
+                    # Test database connection
+                    with db.engine.connect() as conn:
+                        conn.execute(db.text("SELECT 1"))
+                    logger.info(f"Database connection successful (attempt {attempt + 1})")
+                    
+                    # Create all tables
+                    db.create_all()
+                    logger.info("Database tables created/verified successfully")
+                    break
+                except Exception as db_error:
+                    if attempt < max_retries - 1:
+                        logger.warning(f"Database initialization attempt {attempt + 1} failed: {str(db_error)}")
+                        logger.info(f"Retrying in {retry_delay} seconds...")
+                        import time
+                        time.sleep(retry_delay)
+                    else:
+                        logger.error(f"Database initialization failed after {max_retries} attempts: {str(db_error)}")
+                        logger.error("Service cannot start without database connection")
+                        raise
         
         logger.info(f"Auth Service starting on port 5004")
         logger.info(f"Database URL: {app.config.get('SQLALCHEMY_DATABASE_URI', 'Not set')[:50]}...")

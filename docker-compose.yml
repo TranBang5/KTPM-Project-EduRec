@@ -1,17 +1,101 @@
 services:
-  # Database Service
-  db:
+  # Auth Database
+  auth-db:
     image: mysql:8.0
-    container_name: recommendation_db
+    container_name: auth_db
     environment:
       MYSQL_ROOT_PASSWORD: rootpassword
-      MYSQL_DATABASE: recommendation_db
+      MYSQL_DATABASE: auth_db
       MYSQL_USER: user
       MYSQL_PASSWORD: password
     ports:
-      - "3306:3306"
+      - "3307:3306"
     volumes:
-      - mysql_data:/var/lib/mysql
+      - auth_mysql_data:/var/lib/mysql
+    networks:
+      - microservices-network
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Catalog Database
+  catalog-db:
+    image: mysql:8.0
+    container_name: catalog_db
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpassword
+      MYSQL_DATABASE: catalog_db
+      MYSQL_USER: user
+      MYSQL_PASSWORD: password
+    ports:
+      - "3308:3306"
+    volumes:
+      - catalog_mysql_data:/var/lib/mysql
+    networks:
+      - microservices-network
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Profile Database
+  profile-db:
+    image: mysql:8.0
+    container_name: profile_db
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpassword
+      MYSQL_DATABASE: profile_db
+      MYSQL_USER: user
+      MYSQL_PASSWORD: password
+    ports:
+      - "3309:3306"
+    volumes:
+      - profile_mysql_data:/var/lib/mysql
+    networks:
+      - microservices-network
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Feedback Database
+  feedback-db:
+    image: mysql:8.0
+    container_name: feedback_db
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpassword
+      MYSQL_DATABASE: feedback_db
+      MYSQL_USER: user
+      MYSQL_PASSWORD: password
+    ports:
+      - "3310:3306"
+    volumes:
+      - feedback_mysql_data:/var/lib/mysql
+    networks:
+      - microservices-network
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Study Plan Database
+  study-plan-db:
+    image: mysql:8.0
+    container_name: study_plan_db
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpassword
+      MYSQL_DATABASE: study_plan_db
+      MYSQL_USER: user
+      MYSQL_PASSWORD: password
+    ports:
+      - "3311:3306"
+    volumes:
+      - study_plan_mysql_data:/var/lib/mysql
     networks:
       - microservices-network
     healthcheck:
@@ -35,8 +119,6 @@ services:
       - PROFILE_SERVICE_URL=http://profile-service:5006
       - FLASK_DEBUG=False
     depends_on:
-      db:
-        condition: service_healthy
       auth-service:
         condition: service_started
       recommendation-service:
@@ -80,7 +162,11 @@ services:
     ports:
       - "5002:5002"
     environment:
+      - DATABASE_URL=mysql+pymysql://user:password@study-plan-db:3306/study_plan_db
       - FLASK_DEBUG=False
+    depends_on:
+      study-plan-db:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:5002/health', timeout=5)"]
       interval: 10s
@@ -98,7 +184,11 @@ services:
     ports:
       - "5003:5003"
     environment:
+      - DATABASE_URL=mysql+pymysql://user:password@feedback-db:3306/feedback_db
       - FLASK_DEBUG=False
+    depends_on:
+      feedback-db:
+        condition: service_healthy
     networks:
       - microservices-network
     restart: unless-stopped
@@ -110,14 +200,12 @@ services:
     ports:
       - "5004:5004"
     environment:
-      - DATABASE_URL=mysql+mysqlconnector://user:password@db:3306/recommendation_db
+      - DATABASE_URL=mysql+pymysql://user:password@auth-db:3306/auth_db
       - SECRET_KEY=your-secret-key-change-in-production
       - JWT_SECRET_KEY=your-jwt-secret-key-change-in-production
       - FLASK_DEBUG=False
-    volumes:
-      - ./models:/app/models
     depends_on:
-      db:
+      auth-db:
         condition: service_healthy
     networks:
       - microservices-network
@@ -130,13 +218,11 @@ services:
     ports:
       - "5005:5005"
     environment:
-      - DATABASE_URL=mysql+mysqlconnector://user:password@db:3306/recommendation_db
+      - DATABASE_URL=mysql+pymysql://user:password@catalog-db:3306/catalog_db
       - AUTH_SERVICE_URL=http://auth-service:5004
       - FLASK_DEBUG=False
-    volumes:
-      - ./models:/app/models
     depends_on:
-      db:
+      catalog-db:
         condition: service_healthy
       auth-service:
         condition: service_started
@@ -151,13 +237,11 @@ services:
     ports:
       - "5006:5006"
     environment:
-      - DATABASE_URL=mysql+mysqlconnector://user:password@db:3306/recommendation_db
+      - DATABASE_URL=mysql+pymysql://user:password@profile-db:3306/profile_db
       - AUTH_SERVICE_URL=http://auth-service:5004
       - FLASK_DEBUG=False
-    volumes:
-      - ./models:/app/models
     depends_on:
-      db:
+      profile-db:
         condition: service_healthy
       auth-service:
         condition: service_started
@@ -203,7 +287,15 @@ services:
     restart: unless-stopped
 
 volumes:
-  mysql_data:
+  auth_mysql_data:
+    driver: local
+  catalog_mysql_data:
+    driver: local
+  profile_mysql_data:
+    driver: local
+  feedback_mysql_data:
+    driver: local
+  study_plan_mysql_data:
     driver: local
 
 networks:

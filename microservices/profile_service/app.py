@@ -1,5 +1,5 @@
 from flask import Flask, request, jsonify
-from models.database import db, User
+from models import db, UserProfile
 import os
 import sys
 import logging
@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 
 # Configuration
-app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URL', 'mysql+mysqlconnector://user:password@db:3306/recommendation_db')
+app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URL', 'mysql+pymysql://user:password@profile-db:3306/profile_db')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
 # Auth service URL for token verification
@@ -91,10 +91,10 @@ def get_profile(user_id):
         return jsonify({'error': 'Unauthorized'}), 403
     
     try:
-        user = User.query.get(user_id)
+        profile = UserProfile.query.filter_by(user_id=user_id).first()
         
-        # If user not found in Profile Service database, try to get from Auth Service
-        if not user:
+        # If profile not found in Profile Service database, try to get from Auth Service
+        if not profile:
             logger.warning(f"User {user_id} not found in Profile Service database, trying Auth Service...")
             try:
                 # Get auth header from request
@@ -120,15 +120,16 @@ def get_profile(user_id):
             return jsonify({'error': 'User not found'}), 404
         
         return jsonify({
-            'id': user.id,
-            'email': user.email,
-            'full_name': user.full_name,
-            'school': user.school,
-            'current_grade': user.current_grade,
-            'favorite_subjects': user.favorite_subjects,
-            'learning_goals': user.learning_goals,
-            'preferred_learning_method': user.preferred_learning_method,
-            'created_at': user.created_at.isoformat() if user.created_at else None
+            'id': profile.user_id,
+            'email': profile.email,
+            'full_name': profile.full_name,
+            'school': profile.school,
+            'current_grade': profile.current_grade,
+            'favorite_subjects': profile.favorite_subjects,
+            'learning_goals': profile.learning_goals,
+            'preferred_learning_method': profile.preferred_learning_method,
+            'avatar_url': profile.avatar_url,
+            'created_at': profile.created_at.isoformat() if profile.created_at else None
         }), 200
     except Exception as e:
         logger.error(f"Error getting profile: {str(e)}")
@@ -157,39 +158,44 @@ def update_profile(user_id):
     if request.current_user_id != user_id:
         return jsonify({'error': 'Unauthorized'}), 403
     
-    user = User.query.get(user_id)
-    if not user:
-        return jsonify({'error': 'User not found'}), 404
+    profile = UserProfile.query.filter_by(user_id=user_id).first()
+    if not profile:
+        # Create new profile if doesn't exist
+        profile = UserProfile(user_id=user_id)
+        db.session.add(profile)
     
     data = request.get_json()
     
     # Update allowed fields
     if 'full_name' in data:
-        user.full_name = data['full_name']
+        profile.full_name = data['full_name']
     if 'school' in data:
-        user.school = data['school']
+        profile.school = data['school']
     if 'current_grade' in data:
-        user.current_grade = data['current_grade']
+        profile.current_grade = data['current_grade']
     if 'favorite_subjects' in data:
-        user.favorite_subjects = data['favorite_subjects']
+        profile.favorite_subjects = data['favorite_subjects']
     if 'learning_goals' in data:
-        user.learning_goals = data['learning_goals']
+        profile.learning_goals = data['learning_goals']
     if 'preferred_learning_method' in data:
-        user.preferred_learning_method = data['preferred_learning_method']
+        profile.preferred_learning_method = data['preferred_learning_method']
+    if 'avatar_url' in data:
+        profile.avatar_url = data['avatar_url']
     
     try:
         db.session.commit()
         return jsonify({
             'message': 'Profile updated successfully',
             'profile': {
-                'id': user.id,
-                'email': user.email,
-                'full_name': user.full_name,
-                'school': user.school,
-                'current_grade': user.current_grade,
-                'favorite_subjects': user.favorite_subjects,
-                'learning_goals': user.learning_goals,
-                'preferred_learning_method': user.preferred_learning_method
+                'id': profile.user_id,
+                'email': profile.email,
+                'full_name': profile.full_name,
+                'school': profile.school,
+                'current_grade': profile.current_grade,
+                'favorite_subjects': profile.favorite_subjects,
+                'learning_goals': profile.learning_goals,
+                'preferred_learning_method': profile.preferred_learning_method,
+                'avatar_url': profile.avatar_url
             }
         }), 200
     except Exception as e:

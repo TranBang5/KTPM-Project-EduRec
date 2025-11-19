@@ -1,5 +1,5 @@
 from flask import Flask, request, jsonify
-from models.database import db, Course, Tutor, Material
+from models import db, Course, Tutor, Material
 import os
 import sys
 import re
@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 
 # Configuration
-app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URL', 'mysql+mysqlconnector://user:password@db:3306/recommendation_db')
+app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URL', 'mysql+pymysql://user:password@catalog-db:3306/catalog_db')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
 # Auth service URL for token verification

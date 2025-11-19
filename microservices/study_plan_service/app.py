@@ -1,5 +1,6 @@
 from flask import Flask, request, jsonify
 from datetime import datetime
+from models import db, StudyPlan, StudyPlanItem
 import json
 import re
 import logging
@@ -12,9 +13,12 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
-# In-memory storage for study plans (in production, use a database)
-study_plans = {}
-study_plan_items = {}
+# Configuration
+app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URL', 'mysql+pymysql://user:password@study-plan-db:3306/study_plan_db')
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+
+# Initialize database
+db.init_app(app)
 
 @app.route('/', methods=['GET'])
 def index():
@@ -37,10 +41,17 @@ def index():
 @app.route('/health', methods=['GET'])
 def health_check():
     """Health check endpoint"""
-    return jsonify({
-        'status': 'healthy',
-        'service': 'study-plan-service'
-    })
+    try:
+        # Check database connection
+        with db.engine.connect() as conn:
+            conn.execute(db.text("SELECT 1"))
+        return jsonify({
+            'status': 'healthy',
+            'service': 'study-plan-service'
+        }), 200
+    except Exception as e:
+        logger.error(f"Health check failed: {str(e)}")
+        return jsonify({'status': 'unhealthy', 'service': 'study-plan-service', 'error': str(e)}), 503
 
 @app.route('/study-plans', methods=['POST'])
 def create_study_plan():
@@ -57,26 +68,27 @@ def create_study_plan():
             return jsonify({'error': 'Invalid user_id'}), 400
         
         # Check if user already has a study plan
-        if user_id in study_plans:
+        existing_plan = StudyPlan.query.filter_by(user_id=user_id).first()
+        if existing_plan:
             return jsonify({'error': 'Study plan already exists for this user'}), 409
 
         # Create new study plan
-        study_plan = {
-            'id': f"sp_{user_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
-            'user_id': user_id,
-            'created_at': datetime.now().isoformat(),
-            'updated_at': datetime.now().isoformat()
-        }
-        
-        study_plans[user_id] = study_plan
-        study_plan_items[user_id] = []
+        study_plan = StudyPlan(user_id=user_id)
+        db.session.add(study_plan)
+        db.session.commit()
 
         return jsonify({
             'success': True,
-            'study_plan': study_plan
+            'study_plan': {
+                'id': study_plan.id,
+                'user_id': study_plan.user_id,
+                'created_at': study_plan.created_at.isoformat() if study_plan.created_at else None,
+                'updated_at': study_plan.updated_at.isoformat() if study_plan.updated_at else None
+            }
         }), 201
 
     except Exception as e:
+        db.session.rollback()
         logger.error(f"Error creating study plan: {str(e)}")
         return jsonify({'error': str(e)}), 500
 
@@ -84,22 +96,40 @@ def create_study_plan():
 def get_study_plan(user_id):
     """Get study plan for a user"""
     try:
-        # Convert user_id from string to int to match add_study_plan_item
+        # Convert user_id from string to int
         try:
             user_id = int(user_id)
         except (ValueError, TypeError):
             return jsonify({'error': 'Invalid user_id'}), 400
         
-        if user_id not in study_plans:
+        study_plan = StudyPlan.query.filter_by(user_id=user_id).first()
+        if not study_plan:
             return jsonify({'error': 'Study plan not found'}), 404
 
-        study_plan = study_plans[user_id]
-        items = study_plan_items.get(user_id, [])
+        items = StudyPlanItem.query.filter_by(user_id=user_id).all()
+        items_list = [{
+            'id': item.id,
+            'user_id': item.user_id,
+            'item_type': item.item_type,
+            'item_id': item.item_id,
+            'name': item.name,
+            'subject': item.subject,
+            'grade': item.grade,
+            'method': item.method,
+            'time_slots': item.time_slots,
+            'created_at': item.created_at.isoformat() if item.created_at else None,
+            'updated_at': item.updated_at.isoformat() if item.updated_at else None
+        } for item in items]
 
         return jsonify({
             'success': True,
-            'study_plan': study_plan,
-            'items': items
+            'study_plan': {
+                'id': study_plan.id,
+                'user_id': study_plan.user_id,
+                'created_at': study_plan.created_at.isoformat() if study_plan.created_at else None,
+                'updated_at': study_plan.updated_at.isoformat() if study_plan.updated_at else None
+            },
+            'items': items_list
         })
 
     except Exception as e:
@@ -114,8 +144,7 @@ def add_study_plan_item(user_id):
         if not data:
             return jsonify({'error': 'No data provided'}), 400
 
-        # Use user_id from URL path, not from data
-        # Convert user_id from string to int if needed
+        # Convert user_id from string to int
         try:
             user_id = int(user_id)
         except (ValueError, TypeError):
@@ -127,52 +156,58 @@ def add_study_plan_item(user_id):
                 return jsonify({'error': f'{field} is required'}), 400
         
         # Auto-create study plan if it doesn't exist
-        if user_id not in study_plans:
+        study_plan = StudyPlan.query.filter_by(user_id=user_id).first()
+        if not study_plan:
             logger.info(f"Auto-creating study plan for user {user_id}")
-            study_plan = {
-                'id': f"sp_{user_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
-                'user_id': user_id,
-                'created_at': datetime.now().isoformat(),
-                'updated_at': datetime.now().isoformat()
-            }
-            study_plans[user_id] = study_plan
-            study_plan_items[user_id] = []
+            study_plan = StudyPlan(user_id=user_id)
+            db.session.add(study_plan)
+            db.session.flush()  # Get the ID
 
         # Check if item already exists
-        existing_item = next(
-            (item for item in study_plan_items[user_id] 
-             if item['item_type'] == data['item_type'] and item['item_id'] == data['item_id']),
-            None
-        )
+        existing_item = StudyPlanItem.query.filter_by(
+            user_id=user_id,
+            item_type=data['item_type'],
+            item_id=str(data['item_id'])
+        ).first()
         
         if existing_item:
             return jsonify({'error': 'Item already exists in study plan'}), 409
 
         # Create new study plan item
-        item = {
-            'id': f"item_{len(study_plan_items[user_id]) + 1}",
-            'user_id': user_id,
-            'item_type': data['item_type'],
-            'item_id': data['item_id'],
-            'name': data['name'],
-            'subject': data.get('subject', ''),
-            'grade': data.get('grade', ''),
-            'method': data.get('method', ''),
-            'time_slots': data.get('time_slots', ''),
-            'created_at': datetime.now().isoformat()
-        }
+        item = StudyPlanItem(
+            study_plan_id=study_plan.id,
+            user_id=user_id,
+            item_type=data['item_type'],
+            item_id=str(data['item_id']),
+            name=data['name'],
+            subject=data.get('subject', ''),
+            grade=data.get('grade', ''),
+            method=data.get('method', ''),
+            time_slots=json.dumps(data.get('time_slots', [])) if isinstance(data.get('time_slots'), list) else data.get('time_slots', '')
+        )
 
-        study_plan_items[user_id].append(item)
-        
-        # Update study plan timestamp
-        study_plans[user_id]['updated_at'] = datetime.now().isoformat()
+        db.session.add(item)
+        study_plan.updated_at = datetime.utcnow()
+        db.session.commit()
 
         return jsonify({
             'success': True,
-            'item': item
+            'item': {
+                'id': item.id,
+                'user_id': item.user_id,
+                'item_type': item.item_type,
+                'item_id': item.item_id,
+                'name': item.name,
+                'subject': item.subject,
+                'grade': item.grade,
+                'method': item.method,
+                'time_slots': item.time_slots,
+                'created_at': item.created_at.isoformat() if item.created_at else None
+            }
         }), 201
 
     except Exception as e:
+        db.session.rollback()
         logger.error(f"Error adding study plan item: {str(e)}")
         return jsonify({'error': str(e)}), 500
 
@@ -183,41 +218,58 @@ def update_study_plan_item(user_id, item_id):
         # Convert user_id from string to int
         try:
             user_id = int(user_id)
+            item_id = int(item_id)
         except (ValueError, TypeError):
-            return jsonify({'error': 'Invalid user_id'}), 400
+            return jsonify({'error': 'Invalid user_id or item_id'}), 400
         
         data = request.get_json()
         if not data:
             return jsonify({'error': 'No data provided'}), 400
 
-        if user_id not in study_plans:
+        study_plan = StudyPlan.query.filter_by(user_id=user_id).first()
+        if not study_plan:
             return jsonify({'error': 'Study plan not found'}), 404
 
         # Find the item
-        item = next(
-            (item for item in study_plan_items[user_id] if item['id'] == item_id),
-            None
-        )
-        
+        item = StudyPlanItem.query.filter_by(id=item_id, user_id=user_id).first()
         if not item:
             return jsonify({'error': 'Item not found'}), 404
 
         # Update item fields
-        for field in ['name', 'subject', 'grade', 'method', 'time_slots']:
-            if field in data:
-                item[field] = data[field]
-
-        item['updated_at'] = datetime.now().isoformat()
+        if 'name' in data:
+            item.name = data['name']
+        if 'subject' in data:
+            item.subject = data['subject']
+        if 'grade' in data:
+            item.grade = data['grade']
+        if 'method' in data:
+            item.method = data['method']
+        if 'time_slots' in data:
+            item.time_slots = json.dumps(data['time_slots']) if isinstance(data['time_slots'], list) else data['time_slots']
         
-        # Update study plan timestamp
-        study_plans[user_id]['updated_at'] = datetime.now().isoformat()
+        item.updated_at = datetime.utcnow()
+        study_plan.updated_at = datetime.utcnow()
+        db.session.commit()
 
         return jsonify({
             'success': True,
-            'item': item
+            'item': {
+                'id': item.id,
+                'user_id': item.user_id,
+                'item_type': item.item_type,
+                'item_id': item.item_id,
+                'name': item.name,
+                'subject': item.subject,
+                'grade': item.grade,
+                'method': item.method,
+                'time_slots': item.time_slots,
+                'created_at': item.created_at.isoformat() if item.created_at else None,
+                'updated_at': item.updated_at.isoformat() if item.updated_at else None
+            }
         })
 
     except Exception as e:
+        db.session.rollback()
         logger.error(f"Error updating study plan item: {str(e)}")
         return jsonify({'error': str(e)}), 500
 
@@ -228,23 +280,22 @@ def delete_study_plan_item(user_id, item_id):
         # Convert user_id from string to int
         try:
             user_id = int(user_id)
+            item_id = int(item_id)
         except (ValueError, TypeError):
-            return jsonify({'error': 'Invalid user_id'}), 400
+            return jsonify({'error': 'Invalid user_id or item_id'}), 400
         
-        if user_id not in study_plans:
+        study_plan = StudyPlan.query.filter_by(user_id=user_id).first()
+        if not study_plan:
             return jsonify({'error': 'Study plan not found'}), 404
 
         # Find and remove the item
-        items = study_plan_items[user_id]
-        item = next((item for item in items if item['id'] == item_id), None)
-        
+        item = StudyPlanItem.query.filter_by(id=item_id, user_id=user_id).first()
         if not item:
             return jsonify({'error': 'Item not found'}), 404
 
-        items.remove(item)
-        
-        # Update study plan timestamp
-        study_plans[user_id]['updated_at'] = datetime.now().isoformat()
+        db.session.delete(item)
+        study_plan.updated_at = datetime.utcnow()
+        db.session.commit()
 
         return jsonify({
             'success': True,
@@ -252,6 +303,7 @@ def delete_study_plan_item(user_id, item_id):
         })
 
     except Exception as e:
+        db.session.rollback()
         logger.error(f"Error deleting study plan item: {str(e)}")
         return jsonify({'error': str(e)}), 500
 
@@ -265,13 +317,28 @@ def get_study_schedule(user_id):
         except (ValueError, TypeError):
             return jsonify({'error': 'Invalid user_id'}), 400
         
-        if user_id not in study_plans:
+        study_plan = StudyPlan.query.filter_by(user_id=user_id).first()
+        if not study_plan:
             return jsonify({'error': 'Study plan not found'}), 404
 
-        items = study_plan_items.get(user_id, [])
+        items = StudyPlanItem.query.filter_by(user_id=user_id).all()
+        
+        # Convert to dict format for sort_items_by_time
+        items_dict = [{
+            'id': item.id,
+            'user_id': item.user_id,
+            'item_type': item.item_type,
+            'item_id': item.item_id,
+            'name': item.name,
+            'subject': item.subject,
+            'grade': item.grade,
+            'method': item.method,
+            'time_slots': item.time_slots,
+            'created_at': item.created_at.isoformat() if item.created_at else None
+        } for item in items]
         
         # Sort items by time
-        sorted_items = sort_items_by_time(items)
+        sorted_items = sort_items_by_time(items_dict)
 
         return jsonify({
             'success': True,
@@ -392,7 +459,34 @@ def sort_items_by_time(items):
 if __name__ == '__main__':
     try:
         logger.info("Initializing Study Plan Service...")
+        with app.app_context():
+            # Retry database connection and table creation
+            max_retries = 5
+            retry_delay = 2
+            for attempt in range(max_retries):
+                try:
+                    # Test database connection
+                    with db.engine.connect() as conn:
+                        conn.execute(db.text("SELECT 1"))
+                    logger.info(f"Database connection successful (attempt {attempt + 1})")
+                    
+                    # Create all tables
+                    db.create_all()
+                    logger.info("Database tables created/verified successfully")
+                    break
+                except Exception as db_error:
+                    if attempt < max_retries - 1:
+                        logger.warning(f"Database initialization attempt {attempt + 1} failed: {str(db_error)}")
+                        logger.info(f"Retrying in {retry_delay} seconds...")
+                        import time
+                        time.sleep(retry_delay)
+                    else:
+                        logger.error(f"Database initialization failed after {max_retries} attempts: {str(db_error)}")
+                        logger.error("Service cannot start without database connection")
+                        raise
+        
         logger.info(f"Study Plan Service starting on port 5002")
+        logger.info(f"Database URL: {app.config.get('SQLALCHEMY_DATABASE_URI', 'Not set')[:50]}...")
         
         # Disable debug mode in Docker to prevent auto-restart
         debug_mode = os.getenv('FLASK_DEBUG', 'False').lower() == 'true'

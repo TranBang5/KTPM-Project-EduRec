@@ -1,9 +1,11 @@
 from flask import Flask, request, jsonify
 from datetime import datetime
+from models import db, Feedback
 import logging
 import json
 import os
 import sys
+from sqlalchemy import func
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -11,9 +13,12 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
-# In-memory storage for feedback (in production, use a database)
-feedbacks = {}
-feedback_analytics = {}
+# Configuration
+app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URL', 'mysql+pymysql://user:password@feedback-db:3306/feedback_db')
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+
+# Initialize database
+db.init_app(app)
 
 @app.route('/', methods=['GET'])
 def index():
@@ -36,10 +41,17 @@ def index():
 @app.route('/health', methods=['GET'])
 def health_check():
     """Health check endpoint"""
-    return jsonify({
-        'status': 'healthy',
-        'service': 'feedback-service'
-    })
+    try:
+        # Check database connection
+        with db.engine.connect() as conn:
+            conn.execute(db.text("SELECT 1"))
+        return jsonify({
+            'status': 'healthy',
+            'service': 'feedback-service'
+        }), 200
+    except Exception as e:
+        logger.error(f"Health check failed: {str(e)}")
+        return jsonify({'status': 'unhealthy', 'service': 'feedback-service', 'error': str(e)}), 503
 
 @app.route('/feedback', methods=['POST'])
 def submit_feedback():
@@ -60,50 +72,25 @@ def submit_feedback():
             return jsonify({'error': 'Rating must be an integer between 1 and 5'}), 400
 
         # Create feedback entry
-        feedback_id = f"fb_{len(feedbacks) + 1}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-        feedback = {
-            'id': feedback_id,
-            'user_id': data['user_id'],
-            'feedback_type': data['feedback_type'],
-            'content': data['content'],
-            'rating': rating,
-            'created_at': datetime.now().isoformat(),
-            'status': 'pending'  # pending, reviewed, resolved
-        }
+        feedback = Feedback(
+            user_id=data['user_id'],
+            feedback_type=data['feedback_type'],
+            content=data['content'],
+            rating=rating,
+            status='pending'
+        )
 
-        # Store feedback
-        feedbacks[feedback_id] = feedback
-
-        # Update analytics
-        user_id = data['user_id']
-        if user_id not in feedback_analytics:
-            feedback_analytics[user_id] = {
-                'total_feedback': 0,
-                'average_rating': 0.0,
-                'feedback_by_type': {},
-                'last_feedback_date': None
-            }
-
-        analytics = feedback_analytics[user_id]
-        analytics['total_feedback'] += 1
-        
-        # Update average rating
-        total_rating = analytics['average_rating'] * (analytics['total_feedback'] - 1) + rating
-        analytics['average_rating'] = total_rating / analytics['total_feedback']
-        
-        # Update feedback by type
-        feedback_type = data['feedback_type']
-        analytics['feedback_by_type'][feedback_type] = analytics['feedback_by_type'].get(feedback_type, 0) + 1
-        
-        analytics['last_feedback_date'] = datetime.now().isoformat()
+        db.session.add(feedback)
+        db.session.commit()
 
         return jsonify({
             'success': True,
-            'feedback_id': feedback_id,
+            'feedback_id': feedback.id,
             'message': 'Feedback submitted successfully'
         }), 201
 
     except Exception as e:
+        db.session.rollback()
         logger.error(f"Error submitting feedback: {str(e)}")
         return jsonify({'error': str(e)}), 500
 
@@ -111,22 +98,30 @@ def submit_feedback():
 def get_user_feedback(user_id):
     """Get all feedback for a specific user"""
     try:
-        user_feedbacks = [fb for fb in feedbacks.values() if fb['user_id'] == user_id]
+        user_feedbacks = Feedback.query.filter_by(user_id=user_id).order_by(Feedback.created_at.desc()).all()
         
-        # Sort by creation date (newest first)
-        user_feedbacks.sort(key=lambda x: x['created_at'], reverse=True)
+        feedbacks_list = [{
+            'id': fb.id,
+            'user_id': fb.user_id,
+            'feedback_type': fb.feedback_type,
+            'content': fb.content,
+            'rating': fb.rating,
+            'status': fb.status,
+            'created_at': fb.created_at.isoformat() if fb.created_at else None,
+            'updated_at': fb.updated_at.isoformat() if fb.updated_at else None
+        } for fb in user_feedbacks]
 
         return jsonify({
             'success': True,
-            'feedbacks': user_feedbacks,
-            'count': len(user_feedbacks)
+            'feedbacks': feedbacks_list,
+            'count': len(feedbacks_list)
         })
 
     except Exception as e:
         logger.error(f"Error getting user feedback: {str(e)}")
         return jsonify({'error': str(e)}), 500
 
-@app.route('/feedback/<feedback_id>', methods=['PUT'])
+@app.route('/feedback/<int:feedback_id>', methods=['PUT'])
 def update_feedback_status(feedback_id):
     """Update feedback status (for admin use)"""
     try:
@@ -134,22 +129,33 @@ def update_feedback_status(feedback_id):
         if not data or 'status' not in data:
             return jsonify({'error': 'status is required'}), 400
 
-        if feedback_id not in feedbacks:
+        feedback = Feedback.query.get(feedback_id)
+        if not feedback:
             return jsonify({'error': 'Feedback not found'}), 404
 
         valid_statuses = ['pending', 'reviewed', 'resolved']
         if data['status'] not in valid_statuses:
             return jsonify({'error': f'Status must be one of: {valid_statuses}'}), 400
 
-        feedbacks[feedback_id]['status'] = data['status']
-        feedbacks[feedback_id]['updated_at'] = datetime.now().isoformat()
+        feedback.status = data['status']
+        db.session.commit()
 
         return jsonify({
             'success': True,
-            'feedback': feedbacks[feedback_id]
+            'feedback': {
+                'id': feedback.id,
+                'user_id': feedback.user_id,
+                'feedback_type': feedback.feedback_type,
+                'content': feedback.content,
+                'rating': feedback.rating,
+                'status': feedback.status,
+                'created_at': feedback.created_at.isoformat() if feedback.created_at else None,
+                'updated_at': feedback.updated_at.isoformat() if feedback.updated_at else None
+            }
         })
 
     except Exception as e:
+        db.session.rollback()
         logger.error(f"Error updating feedback status: {str(e)}")
         return jsonify({'error': str(e)}), 500
 
@@ -158,7 +164,7 @@ def get_feedback_analytics():
     """Get overall feedback analytics"""
     try:
         # Calculate overall analytics
-        total_feedback = len(feedbacks)
+        total_feedback = Feedback.query.count()
         if total_feedback == 0:
             return jsonify({
                 'success': True,
@@ -172,31 +178,36 @@ def get_feedback_analytics():
             })
 
         # Calculate average rating
-        total_rating = sum(fb['rating'] for fb in feedbacks.values())
-        average_rating = total_rating / total_feedback
+        avg_rating = db.session.query(func.avg(Feedback.rating)).scalar()
+        average_rating = round(float(avg_rating), 2) if avg_rating else 0.0
 
         # Group by type
         feedback_by_type = {}
-        for fb in feedbacks.values():
-            fb_type = fb['feedback_type']
-            feedback_by_type[fb_type] = feedback_by_type.get(fb_type, 0) + 1
+        type_counts = db.session.query(Feedback.feedback_type, func.count(Feedback.id)).group_by(Feedback.feedback_type).all()
+        for fb_type, count in type_counts:
+            feedback_by_type[fb_type] = count
 
         # Group by status
         feedback_by_status = {}
-        for fb in feedbacks.values():
-            status = fb['status']
-            feedback_by_status[status] = feedback_by_status.get(status, 0) + 1
+        status_counts = db.session.query(Feedback.status, func.count(Feedback.id)).group_by(Feedback.status).all()
+        for status, count in status_counts:
+            feedback_by_status[status] = count
 
         # Get recent feedback (last 10)
-        recent_feedback = sorted(
-            list(feedbacks.values()),
-            key=lambda x: x['created_at'],
-            reverse=True
-        )[:10]
+        recent_feedbacks = Feedback.query.order_by(Feedback.created_at.desc()).limit(10).all()
+        recent_feedback = [{
+            'id': fb.id,
+            'user_id': fb.user_id,
+            'feedback_type': fb.feedback_type,
+            'content': fb.content[:100] + '...' if len(fb.content) > 100 else fb.content,
+            'rating': fb.rating,
+            'status': fb.status,
+            'created_at': fb.created_at.isoformat() if fb.created_at else None
+        } for fb in recent_feedbacks]
 
         analytics = {
             'total_feedback': total_feedback,
-            'average_rating': round(average_rating, 2),
+            'average_rating': average_rating,
             'feedback_by_type': feedback_by_type,
             'feedback_by_status': feedback_by_status,
             'recent_feedback': recent_feedback
@@ -215,7 +226,9 @@ def get_feedback_analytics():
 def get_user_feedback_analytics(user_id):
     """Get feedback analytics for a specific user"""
     try:
-        if user_id not in feedback_analytics:
+        user_feedbacks = Feedback.query.filter_by(user_id=user_id).all()
+        
+        if not user_feedbacks:
             return jsonify({
                 'success': True,
                 'analytics': {
@@ -226,9 +239,27 @@ def get_user_feedback_analytics(user_id):
                 }
             })
 
+        total_feedback = len(user_feedbacks)
+        avg_rating = sum(fb.rating for fb in user_feedbacks) / total_feedback if total_feedbacks else 0.0
+        
+        feedback_by_type = {}
+        for fb in user_feedbacks:
+            fb_type = fb.feedback_type
+            feedback_by_type[fb_type] = feedback_by_type.get(fb_type, 0) + 1
+
+        last_feedback = max(user_feedbacks, key=lambda x: x.created_at if x.created_at else datetime.min)
+        last_feedback_date = last_feedback.created_at.isoformat() if last_feedback.created_at else None
+
+        analytics = {
+            'total_feedback': total_feedback,
+            'average_rating': round(avg_rating, 2),
+            'feedback_by_type': feedback_by_type,
+            'last_feedback_date': last_feedback_date
+        }
+
         return jsonify({
             'success': True,
-            'analytics': feedback_analytics[user_id]
+            'analytics': analytics
         })
 
     except Exception as e:
@@ -245,34 +276,44 @@ def generate_feedback_report():
         feedback_type = request.args.get('feedback_type')
         status = request.args.get('status')
 
-        # Filter feedbacks
-        filtered_feedbacks = list(feedbacks.values())
+        # Build query
+        query = Feedback.query
 
         if start_date:
-            filtered_feedbacks = [
-                fb for fb in filtered_feedbacks 
-                if fb['created_at'] >= start_date
-            ]
-
+            query = query.filter(Feedback.created_at >= datetime.fromisoformat(start_date.replace('Z', '+00:00')))
         if end_date:
-            filtered_feedbacks = [
-                fb for fb in filtered_feedbacks 
-                if fb['created_at'] <= end_date
-            ]
-
+            query = query.filter(Feedback.created_at <= datetime.fromisoformat(end_date.replace('Z', '+00:00')))
         if feedback_type:
-            filtered_feedbacks = [
-                fb for fb in filtered_feedbacks 
-                if fb['feedback_type'] == feedback_type
-            ]
-
+            query = query.filter(Feedback.feedback_type == feedback_type)
         if status:
-            filtered_feedbacks = [
-                fb for fb in filtered_feedbacks 
-                if fb['status'] == status
-            ]
+            query = query.filter(Feedback.status == status)
+
+        filtered_feedbacks = query.all()
 
         # Generate report
+        feedbacks_list = [{
+            'id': fb.id,
+            'user_id': fb.user_id,
+            'feedback_type': fb.feedback_type,
+            'content': fb.content,
+            'rating': fb.rating,
+            'status': fb.status,
+            'created_at': fb.created_at.isoformat() if fb.created_at else None,
+            'updated_at': fb.updated_at.isoformat() if fb.updated_at else None
+        } for fb in filtered_feedbacks]
+
+        # Calculate summary
+        total_feedback = len(filtered_feedbacks)
+        avg_rating = sum(fb.rating for fb in filtered_feedbacks) / total_feedback if filtered_feedbacks else 0
+        
+        feedback_by_type = {}
+        feedback_by_status = {}
+        for fb in filtered_feedbacks:
+            fb_type = fb.feedback_type
+            fb_status = fb.status
+            feedback_by_type[fb_type] = feedback_by_type.get(fb_type, 0) + 1
+            feedback_by_status[fb_status] = feedback_by_status.get(fb_status, 0) + 1
+
         report = {
             'filters': {
                 'start_date': start_date,
@@ -281,25 +322,13 @@ def generate_feedback_report():
                 'status': status
             },
             'summary': {
-                'total_feedback': len(filtered_feedbacks),
-                'average_rating': round(
-                    sum(fb['rating'] for fb in filtered_feedbacks) / len(filtered_feedbacks), 2
-                ) if filtered_feedbacks else 0,
-                'feedback_by_type': {},
-                'feedback_by_status': {}
+                'total_feedback': total_feedback,
+                'average_rating': round(avg_rating, 2),
+                'feedback_by_type': feedback_by_type,
+                'feedback_by_status': feedback_by_status
             },
-            'feedbacks': filtered_feedbacks
+            'feedbacks': feedbacks_list
         }
-
-        # Calculate breakdowns
-        for fb in filtered_feedbacks:
-            fb_type = fb['feedback_type']
-            fb_status = fb['status']
-            
-            report['summary']['feedback_by_type'][fb_type] = \
-                report['summary']['feedback_by_type'].get(fb_type, 0) + 1
-            report['summary']['feedback_by_status'][fb_status] = \
-                report['summary']['feedback_by_status'].get(fb_status, 0) + 1
 
         return jsonify({
             'success': True,
@@ -313,7 +342,34 @@ def generate_feedback_report():
 if __name__ == '__main__':
     try:
         logger.info("Initializing Feedback Service...")
+        with app.app_context():
+            # Retry database connection and table creation
+            max_retries = 5
+            retry_delay = 2
+            for attempt in range(max_retries):
+                try:
+                    # Test database connection
+                    with db.engine.connect() as conn:
+                        conn.execute(db.text("SELECT 1"))
+                    logger.info(f"Database connection successful (attempt {attempt + 1})")
+                    
+                    # Create all tables
+                    db.create_all()
+                    logger.info("Database tables created/verified successfully")
+                    break
+                except Exception as db_error:
+                    if attempt < max_retries - 1:
+                        logger.warning(f"Database initialization attempt {attempt + 1} failed: {str(db_error)}")
+                        logger.info(f"Retrying in {retry_delay} seconds...")
+                        import time
+                        time.sleep(retry_delay)
+                    else:
+                        logger.error(f"Database initialization failed after {max_retries} attempts: {str(db_error)}")
+                        logger.error("Service cannot start without database connection")
+                        raise
+        
         logger.info(f"Feedback Service starting on port 5003")
+        logger.info(f"Database URL: {app.config.get('SQLALCHEMY_DATABASE_URI', 'Not set')[:50]}...")
         
         # Disable debug mode in Docker to prevent auto-restart
         debug_mode = os.getenv('FLASK_DEBUG', 'False').lower() == 'true'
