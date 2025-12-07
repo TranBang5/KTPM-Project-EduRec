@@ -27,7 +27,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy only necessary application files
 COPY app.py .
 COPY models/ models/
+COPY services/ services/
 COPY templates/ templates/
+COPY static/ static/
 COPY load_data.py .
 COPY start.sh .
 
@@ -47,7 +49,8 @@ ENV TF_CPP_MIN_LOG_LEVEL=2
 # Expose port
 EXPOSE 5000
 
-# Make start script executable
-RUN chmod +x start.sh
+# Make start script executable and fix line endings
+RUN chmod +x start.sh && \
+    sed -i 's/\r$//' start.sh
 
-CMD ["./start.sh"]
+CMD ["/bin/bash", "./start.sh"]

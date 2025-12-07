@@ -45,6 +45,6 @@ else
     echo "Skipping data load as database already has data"
 fi
 
-# Start the Flask application
-echo "Starting Flask application..."
-python app.py 
+# Start the Flask application with Gunicorn
+echo "Starting Flask application with Gunicorn..."
+gunicorn -w 2 -b 0.0.0.0:5000 --timeout 120 --access-logfile - --error-logfile - app:app 
