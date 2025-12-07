@@ -38,7 +38,7 @@
             </div>
         </div>
 
-        {% if not current_user.is_authenticated %}
+        {% if not current_user or not current_user.is_authenticated %}
             <div class="d-grid gap-2 d-md-flex justify-content-md-center">
                 <a href="{{ url_for('register') }}" class="btn btn-primary btn-lg me-md-2">
                     <i class="fas fa-user-plus"></i> Get Started

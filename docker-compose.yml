@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Removed version - it's obsolete in newer docker-compose
 
 services:
@@ -87,3 +88,308 @@ networks:
   edurec-network:
     driver: bridge
 
+=======
+services:
+  # Auth Database
+  auth-db:
+    image: mysql:8.0
+    container_name: auth_db
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpassword
+      MYSQL_DATABASE: auth_db
+      MYSQL_USER: user
+      MYSQL_PASSWORD: password
+    ports:
+      - "3307:3306"
+    volumes:
+      - auth_mysql_data:/var/lib/mysql
+    networks:
+      - microservices-network
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Catalog Database
+  catalog-db:
+    image: mysql:8.0
+    container_name: catalog_db
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpassword
+      MYSQL_DATABASE: catalog_db
+      MYSQL_USER: user
+      MYSQL_PASSWORD: password
+    ports:
+      - "3308:3306"
+    volumes:
+      - catalog_mysql_data:/var/lib/mysql
+    networks:
+      - microservices-network
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Profile Database
+  profile-db:
+    image: mysql:8.0
+    container_name: profile_db
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpassword
+      MYSQL_DATABASE: profile_db
+      MYSQL_USER: user
+      MYSQL_PASSWORD: password
+    ports:
+      - "3309:3306"
+    volumes:
+      - profile_mysql_data:/var/lib/mysql
+    networks:
+      - microservices-network
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Feedback Database
+  feedback-db:
+    image: mysql:8.0
+    container_name: feedback_db
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpassword
+      MYSQL_DATABASE: feedback_db
+      MYSQL_USER: user
+      MYSQL_PASSWORD: password
+    ports:
+      - "3310:3306"
+    volumes:
+      - feedback_mysql_data:/var/lib/mysql
+    networks:
+      - microservices-network
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Study Plan Database
+  study-plan-db:
+    image: mysql:8.0
+    container_name: study_plan_db
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpassword
+      MYSQL_DATABASE: study_plan_db
+      MYSQL_USER: user
+      MYSQL_PASSWORD: password
+    ports:
+      - "3311:3306"
+    volumes:
+      - study_plan_mysql_data:/var/lib/mysql
+    networks:
+      - microservices-network
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # API Gateway
+  api-gateway:
+    build: ./microservices/api_gateway
+    container_name: api_gateway
+    ports:
+      - "5000:5000"
+    environment:
+      - AUTH_SERVICE_URL=http://auth-service:5004
+      - RECOMMENDATION_SERVICE_URL=http://recommendation-service:5001
+      - STUDY_PLAN_SERVICE_URL=http://study-plan-service:5002
+      - FEEDBACK_SERVICE_URL=http://feedback-service:5003
+      - CATALOG_SERVICE_URL=http://catalog-service:5005
+      - PROFILE_SERVICE_URL=http://profile-service:5006
+      - FLASK_DEBUG=False
+    depends_on:
+      auth-service:
+        condition: service_started
+      recommendation-service:
+        condition: service_started
+      study-plan-service:
+        condition: service_started
+      feedback-service:
+        condition: service_started
+      catalog-service:
+        condition: service_started
+      profile-service:
+        condition: service_started
+    networks:
+      - microservices-network
+    restart: unless-stopped
+
+  # Recommendation Service
+  recommendation-service:
+    build: ./microservices/recommendation_service
+    container_name: recommendation_service
+    ports:
+      - "5001:5001"
+    environment:
+      - WEIGHTS_DIR=/app/checkpoints
+      - BRUTEFORCE_DATA_PATH=/app/bruteforce_data.npz
+      - LOAD_MODEL_ON_STARTUP=true
+      - FLASK_DEBUG=False
+    volumes:
+      - ./models:/app/models
+      - ./checkpoints:/app/checkpoints
+      - ./data:/app/data
+      - ./bruteforce_data.npz:/app/bruteforce_data.npz
+    networks:
+      - microservices-network
+    restart: unless-stopped
+
+  # Study Plan Service
+  study-plan-service:
+    build: ./microservices/study_plan_service
+    container_name: study_plan_service
+    ports:
+      - "5002:5002"
+    environment:
+      - DATABASE_URL=mysql+pymysql://user:password@study-plan-db:3306/study_plan_db
+      - FLASK_DEBUG=False
+    depends_on:
+      study-plan-db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:5002/health', timeout=5)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - microservices-network
+    restart: unless-stopped
+
+  # Feedback Service
+  feedback-service:
+    build: ./microservices/feedback_service
+    container_name: feedback_service
+    ports:
+      - "5003:5003"
+    environment:
+      - DATABASE_URL=mysql+pymysql://user:password@feedback-db:3306/feedback_db
+      - FLASK_DEBUG=False
+    depends_on:
+      feedback-db:
+        condition: service_healthy
+    networks:
+      - microservices-network
+    restart: unless-stopped
+
+  # Auth Service
+  auth-service:
+    build: ./microservices/auth_service
+    container_name: auth_service
+    ports:
+      - "5004:5004"
+    environment:
+      - DATABASE_URL=mysql+pymysql://user:password@auth-db:3306/auth_db
+      - SECRET_KEY=your-secret-key-change-in-production
+      - JWT_SECRET_KEY=your-jwt-secret-key-change-in-production
+      - FLASK_DEBUG=False
+    depends_on:
+      auth-db:
+        condition: service_healthy
+    networks:
+      - microservices-network
+    restart: unless-stopped
+
+  # Catalog Service
+  catalog-service:
+    build: ./microservices/catalog_service
+    container_name: catalog_service
+    ports:
+      - "5005:5005"
+    environment:
+      - DATABASE_URL=mysql+pymysql://user:password@catalog-db:3306/catalog_db
+      - AUTH_SERVICE_URL=http://auth-service:5004
+      - FLASK_DEBUG=False
+    depends_on:
+      catalog-db:
+        condition: service_healthy
+      auth-service:
+        condition: service_started
+    networks:
+      - microservices-network
+    restart: unless-stopped
+
+  # Profile Service
+  profile-service:
+    build: ./microservices/profile_service
+    container_name: profile_service
+    ports:
+      - "5006:5006"
+    environment:
+      - DATABASE_URL=mysql+pymysql://user:password@profile-db:3306/profile_db
+      - AUTH_SERVICE_URL=http://auth-service:5004
+      - FLASK_DEBUG=False
+    depends_on:
+      profile-db:
+        condition: service_healthy
+      auth-service:
+        condition: service_started
+    networks:
+      - microservices-network
+    restart: unless-stopped
+
+  # Frontend Application
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    container_name: frontend_app
+    ports:
+      - "8080:8080"
+    environment:
+      - API_GATEWAY_URL=http://api-gateway:5000
+      - SECRET_KEY=your-secret-key-change-in-production
+      - FLASK_DEBUG=False
+    depends_on:
+      - api-gateway
+    networks:
+      - microservices-network
+    restart: unless-stopped
+
+  # Locust Load Testing
+  locust:
+    build:
+      context: .
+      dockerfile: locust/Dockerfile
+    container_name: locust_master
+    ports:
+      - "8089:8089"
+      - "5557:5557"
+    volumes:
+      - ./locustfile.py:/mnt/locust/locustfile.py:ro
+    working_dir: /mnt/locust
+    command: ["-f", "/mnt/locust/locustfile.py", "--host", "http://api-gateway:5000", "--web-host", "0.0.0.0"]
+    depends_on:
+      - api-gateway
+    networks:
+      - microservices-network
+    restart: unless-stopped
+
+volumes:
+  auth_mysql_data:
+    driver: local
+  catalog_mysql_data:
+    driver: local
+  profile_mysql_data:
+    driver: local
+  feedback_mysql_data:
+    driver: local
+  study_plan_mysql_data:
+    driver: local
+
+networks:
+  microservices-network:
+    driver: bridge
+>>>>>>> 1210fb40b81258e877cf6203cb6bedb9733593b9

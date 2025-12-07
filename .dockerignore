@@ -4,33 +4,46 @@ __pycache__/
 *$py.class
 *.so
 .Python
-myenv/
+env/
 venv/
 ENV/
-env/
-.env
+.venv
 
 # IDE
-.idea/
 .vscode/
+.idea/
 *.swp
 *.swo
 
 # Git
-.git
+.git/
 .gitignore
 
 # Docker
 Dockerfile
+docker-compose.yml
 .dockerignore
+
+# Documentation
+*.md
+!README.md
 
 # Logs
 *.log
 
-# Local development
-*.sqlite3
-*.db
+# Data (large files)
+*.csv
+!data/
 
-# Other
-.DS_Store
-Thumbs.db 
+# Model checkpoints
+checkpoints/
+*.h5
+*.ckpt
+
+# Archive and backup
+backup/
+archive/
+
+# Environment
+.env
+.env.local

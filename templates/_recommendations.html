@@ -50,14 +50,14 @@
             <div class="col-md-4 mb-4">
                 <div class="card h-100">
                     <div class="card-body">
-                        <h5 class="card-title">{{ course.name }}</h5>
+                        <h5 class="card-title">{{ course.name|default('N/A') }}</h5>
                         <p class="card-text">
-                            <strong>Môn học:</strong> {{ course.subject }}{% if course.subject_match %} <span class="badge bg-success">Môn yêu thích</span>{% endif %}<br>
-                            <strong>Khối lớp:</strong> {{ course.grade_level }}{% if course.grade_match %} <span class="badge bg-success">Khối lớp phù hợp</span>{% endif %}<br>
-                            <strong>Phương pháp:</strong> {{ course.teaching_method }}<br>
-                            <strong>Thời gian:</strong> {{ course.teaching_time }}<br>
-                            <strong>Địa điểm:</strong> {{ course.location }}<br>
-                            <strong>Học phí:</strong> {{ "{:,.0f}".format(course.cost) }} VNĐ/Ca
+                            <strong>Môn học:</strong> {{ course.subject|default('N/A') }}{% if course.subject_match %} <span class="badge bg-success">Môn yêu thích</span>{% endif %}<br>
+                            <strong>Khối lớp:</strong> {{ course.grade_level|default('N/A') }}{% if course.grade_match %} <span class="badge bg-success">Khối lớp phù hợp</span>{% endif %}<br>
+                            <strong>Phương pháp:</strong> {{ course.teaching_method|default('N/A') }}<br>
+                            <strong>Thời gian:</strong> {{ course.teaching_time|default('Chưa có') }}<br>
+                            <strong>Địa điểm:</strong> {{ course.location|default('Chưa có') }}<br>
+                            <strong>Học phí:</strong> {% if course.cost %}{{ "{:,.0f}".format(course.cost|float) }} VNĐ/Ca{% else %}Liên hệ{% endif %}
                         </p>
                         {% if course.in_plan %}
                         <button class="btn btn-secondary" disabled>
@@ -67,11 +67,11 @@
                         <button class="btn btn-primary add-to-study-plan" 
                                 data-type="course"
                                 data-id="{{ course.id }}"
-                                data-name="{{ course.name }}"
-                                data-subject="{{ course.subject }}"
-                                data-grade="{{ course.grade_level }}"
-                                data-method="{{ course.teaching_method }}"
-                                data-schedule="{{ course.teaching_time }}">
+                                data-name="{{ course.name|default('') }}"
+                                data-subject="{{ course.subject|default('') }}"
+                                data-grade="{{ course.grade_level|default('') }}"
+                                data-method="{{ course.teaching_method|default('') }}"
+                                data-schedule="{{ course.teaching_time|default('') }}">
                             Thêm vào kế hoạch học tập
                         </button>
                         {% endif %}
@@ -98,12 +98,12 @@
             <div class="col-md-4 mb-4">
                 <div class="card h-100">
                     <div class="card-body">
-                        <h5 class="card-title">{{ tutor.name }}</h5>
+                        <h5 class="card-title">{{ tutor.name|default('N/A') }}</h5>
                         <p class="card-text">
-                            <strong>Môn học:</strong> {{ tutor.subject }}{% if tutor.subject_match %} <span class="badge bg-success">Môn yêu thích</span>{% endif %}<br>
-                            <strong>Khối lớp:</strong> {{ tutor.specialized_grade }}{% if tutor.grade_match %} <span class="badge bg-success">Khối lớp phù hợp</span>{% endif %}<br>
-                            <strong>Phương pháp:</strong> {{ tutor.teaching_method }}<br>
-                            <strong>Thời gian dạy:</strong> {{ tutor.teaching_time }}<br>
+                            <strong>Môn học:</strong> {{ tutor.subject|default('N/A') }}{% if tutor.subject_match %} <span class="badge bg-success">Môn yêu thích</span>{% endif %}<br>
+                            <strong>Khối lớp:</strong> {{ tutor.specialized_grade|default('N/A') }}{% if tutor.grade_match %} <span class="badge bg-success">Khối lớp phù hợp</span>{% endif %}<br>
+                            <strong>Phương pháp:</strong> {{ tutor.teaching_method|default('N/A') }}<br>
+                            <strong>Thời gian dạy:</strong> {{ tutor.teaching_time|default('Chưa có') }}<br>
                             <strong>Kinh nghiệm:</strong> {{ tutor.experience|default(0)|int }} năm
                         </p>
                         {% if tutor.in_plan %}
@@ -114,10 +114,10 @@
                         <button class="btn btn-primary add-to-study-plan" 
                                 data-type="tutor"
                                 data-id="{{ tutor.id }}"
-                                data-name="{{ tutor.name }}"
-                                data-subject="{{ tutor.subject }}"
-                                data-grade="{{ tutor.specialized_grade }}"
-                                data-method="{{ tutor.teaching_method }}">
+                                data-name="{{ tutor.name|default('') }}"
+                                data-subject="{{ tutor.subject|default('') }}"
+                                data-grade="{{ tutor.specialized_grade|default('') }}"
+                                data-method="{{ tutor.teaching_method|default('') }}">
                             Thêm vào kế hoạch học tập
                         </button>
                         {% endif %}
@@ -144,12 +144,12 @@
             <div class="col-md-4 mb-4">
                 <div class="card h-100">
                     <div class="card-body">
-                        <h5 class="card-title">{{ material.name }}</h5>
+                        <h5 class="card-title">{{ material.name|default('N/A') }}</h5>
                         <p class="card-text">
-                            <strong>Môn học:</strong> {{ material.subject }}{% if material.subject_match %} <span class="badge bg-success">Môn yêu thích</span>{% endif %}<br>
-                            <strong>Khối lớp:</strong> {{ material.grade_level }}{% if material.grade_match %} <span class="badge bg-success">Khối lớp phù hợp</span>{% endif %}<br>
-                            <strong>Loại tài liệu:</strong> {{ material.material_type }}<br>
-                            <strong>Mô tả:</strong> {{ material.description }}
+                            <strong>Môn học:</strong> {{ material.subject|default('N/A') }}{% if material.subject_match %} <span class="badge bg-success">Môn yêu thích</span>{% endif %}<br>
+                            <strong>Khối lớp:</strong> {{ material.grade_level|default('N/A') }}{% if material.grade_match %} <span class="badge bg-success">Khối lớp phù hợp</span>{% endif %}<br>
+                            <strong>Loại tài liệu:</strong> {{ material.material_type|default('N/A') }}<br>
+                            <strong>Mô tả:</strong> {{ material.description|default('Chưa có mô tả') }}
                         </p>
                         {% if material.in_plan %}
                         <button class="btn btn-secondary" disabled>
@@ -159,9 +159,9 @@
                         <button class="btn btn-primary add-to-study-plan" 
                                 data-type="material"
                                 data-id="{{ material.id }}"
-                                data-name="{{ material.name }}"
-                                data-subject="{{ material.subject }}"
-                                data-grade="{{ material.grade_level }}">
+                                data-name="{{ material.name|default('') }}"
+                                data-subject="{{ material.subject|default('') }}"
+                                data-grade="{{ material.grade_level|default('') }}">
                             Thêm vào kế hoạch học tập
                         </button>
                         {% endif %}

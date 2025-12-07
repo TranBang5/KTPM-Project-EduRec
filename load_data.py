@@ -1,13 +1,25 @@
 import pandas as pd
+from flask import Flask
 from models.database import db, Course, Tutor, Material
-from app import app
 import os
 import logging
 import re
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 # Configure logging
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+# Create Flask app instance for database operations
+app = Flask(__name__)
+app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URL', 'sqlite:///recommendation.db')
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+
+# Initialize database
+db.init_app(app)
 
 def extract_number_from_string(text):
     """Extract number from string like '60.000 VNĐ/Ca' or '20 năm'"""

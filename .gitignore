@@ -33,4 +33,12 @@ build/
 
 # System Files
 .DS_Store
-Thumbs.db 
+Thumbs.db
+
+# Backup and archive directories (from microservices migration)
+backup/
+archive/
+
+# Microservices build artifacts
+microservices/*/__pycache__/
+microservices/*/*.pyc 
