@@ -1,94 +1,3 @@
-<<<<<<< HEAD
-# Removed version - it's obsolete in newer docker-compose
-
-services:
-  # Database service
-  db:
-    image: mysql:8.0
-    container_name: edurec-db
-    environment:
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-rootpassword}
-      MYSQL_DATABASE: ${MYSQL_DATABASE:-recommendation}
-      MYSQL_USER: ${MYSQL_USER:-edurec}
-      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-edurecpassword}
-    ports:
-      - "3307:3306"  # Map container port 3306 to host port 3307 to avoid conflict
-    volumes:
-      - mysql_data:/var/lib/mysql
-    networks:
-      - edurec-network
-
-  # Flask application instance 1
-  app1:
-    build: .
-    container_name: edurec-app1
-    environment:
-      DATABASE_URL: mysql+pymysql://${MYSQL_USER:-edurec}:${MYSQL_PASSWORD:-edurecpassword}@db:3306/${MYSQL_DATABASE:-recommendation}
-      SECRET_KEY: ${SECRET_KEY:-your-secret-key}
-      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-jwt-secret-key-change-in-production}
-    depends_on:
-      - db
-    networks:
-      - edurec-network
-    volumes:
-      - ./checkpoints:/app/checkpoints
-      - ./instance:/app/instance
-
-  # Flask application instance 2
-  app2:
-    build: .
-    container_name: edurec-app2
-    environment:
-      DATABASE_URL: mysql+pymysql://${MYSQL_USER:-edurec}:${MYSQL_PASSWORD:-edurecpassword}@db:3306/${MYSQL_DATABASE:-recommendation}
-      SECRET_KEY: ${SECRET_KEY:-your-secret-key}
-      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-jwt-secret-key-change-in-production}
-    depends_on:
-      - db
-    networks:
-      - edurec-network
-    volumes:
-      - ./checkpoints:/app/checkpoints
-      - ./instance:/app/instance
-
-  # Flask application instance 3
-  app3:
-    build: .
-    container_name: edurec-app3
-    environment:
-      DATABASE_URL: mysql+pymysql://${MYSQL_USER:-edurec}:${MYSQL_PASSWORD:-edurecpassword}@db:3306/${MYSQL_DATABASE:-recommendation}
-      SECRET_KEY: ${SECRET_KEY:-your-secret-key}
-      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-jwt-secret-key-change-in-production}
-    depends_on:
-      - db
-    networks:
-      - edurec-network
-    volumes:
-      - ./checkpoints:/app/checkpoints
-      - ./instance:/app/instance
-
-  # Nginx load balancer
-  nginx:
-    image: nginx:alpine
-    container_name: edurec-nginx
-    ports:
-      - "80:80"
-    volumes:
-      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
-    depends_on:
-      - app1
-      - app2
-      - app3
-    networks:
-      - edurec-network
-
-volumes:
-  mysql_data:
-
-networks:
-  edurec-network:
-    driver: bridge
-
-=======
 services:
   # Auth Database
   auth-db:
@@ -195,12 +104,70 @@ services:
       timeout: 5s
       retries: 5
 
-  # API Gateway
-  api-gateway:
+  # API Gateway - Instance 1
+  api-gateway-1:
     build: ./microservices/api_gateway
-    container_name: api_gateway
+    container_name: api_gateway_1
     ports:
       - "5000:5000"
+    environment:
+      - AUTH_SERVICE_URL=http://auth-service:5004
+      - RECOMMENDATION_SERVICE_URL=http://recommendation-service:5001
+      - STUDY_PLAN_SERVICE_URL=http://study-plan-service:5002
+      - FEEDBACK_SERVICE_URL=http://feedback-service:5003
+      - CATALOG_SERVICE_URL=http://catalog-service:5005
+      - PROFILE_SERVICE_URL=http://profile-service:5006
+      - FLASK_DEBUG=False
+    depends_on:
+      auth-service:
+        condition: service_started
+      recommendation-service:
+        condition: service_started
+      study-plan-service:
+        condition: service_started
+      feedback-service:
+        condition: service_started
+      catalog-service:
+        condition: service_started
+      profile-service:
+        condition: service_started
+    networks:
+      - microservices-network
+    restart: unless-stopped
+
+  # API Gateway - Instance 2
+  api-gateway-2:
+    build: ./microservices/api_gateway
+    container_name: api_gateway_2
+    environment:
+      - AUTH_SERVICE_URL=http://auth-service:5004
+      - RECOMMENDATION_SERVICE_URL=http://recommendation-service:5001
+      - STUDY_PLAN_SERVICE_URL=http://study-plan-service:5002
+      - FEEDBACK_SERVICE_URL=http://feedback-service:5003
+      - CATALOG_SERVICE_URL=http://catalog-service:5005
+      - PROFILE_SERVICE_URL=http://profile-service:5006
+      - FLASK_DEBUG=False
+    depends_on:
+      auth-service:
+        condition: service_started
+      recommendation-service:
+        condition: service_started
+      study-plan-service:
+        condition: service_started
+      feedback-service:
+        condition: service_started
+      catalog-service:
+        condition: service_started
+      profile-service:
+        condition: service_started
+    networks:
+      - microservices-network
+    restart: unless-stopped
+
+  # API Gateway - Instance 3
+  api-gateway-3:
+    build: ./microservices/api_gateway
+    container_name: api_gateway_3
     environment:
       - AUTH_SERVICE_URL=http://auth-service:5004
       - RECOMMENDATION_SERVICE_URL=http://recommendation-service:5001
@@ -349,11 +316,27 @@ services:
     ports:
       - "8080:8080"
     environment:
-      - API_GATEWAY_URL=http://api-gateway:5000
+      - API_GATEWAY_URL=http://nginx:80
       - SECRET_KEY=your-secret-key-change-in-production
       - FLASK_DEBUG=False
     depends_on:
-      - api-gateway
+      - nginx
+    networks:
+      - microservices-network
+    restart: unless-stopped
+
+  # Nginx Load Balancer
+  nginx:
+    image: nginx:alpine
+    container_name: nginx_load_balancer
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - api-gateway-1
+      - api-gateway-2
+      - api-gateway-3
     networks:
       - microservices-network
     restart: unless-stopped
@@ -370,9 +353,9 @@ services:
     volumes:
       - ./locustfile.py:/mnt/locust/locustfile.py:ro
     working_dir: /mnt/locust
-    command: ["-f", "/mnt/locust/locustfile.py", "--host", "http://api-gateway:5000", "--web-host", "0.0.0.0"]
+    command: ["-f", "/mnt/locust/locustfile.py", "--host", "http://nginx:80", "--web-host", "0.0.0.0"]
     depends_on:
-      - api-gateway
+      - nginx
     networks:
       - microservices-network
     restart: unless-stopped
@@ -392,4 +375,3 @@ volumes:
 networks:
   microservices-network:
     driver: bridge
->>>>>>> 1210fb40b81258e877cf6203cb6bedb9733593b9
