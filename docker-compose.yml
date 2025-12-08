@@ -105,6 +105,110 @@ services:
       timeout: 5s
       retries: 5
 
+  # Redis Shards for Catalog Service (3 shards)
+  redis-shard-0:
+    image: redis:7-alpine
+    container_name: redis_shard_0
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_shard_0_data:/data
+    networks:
+      - microservices-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  redis-shard-1:
+    image: redis:7-alpine
+    container_name: redis_shard_1
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    ports:
+      - "6380:6379"
+    volumes:
+      - redis_shard_1_data:/data
+    networks:
+      - microservices-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  redis-shard-2:
+    image: redis:7-alpine
+    container_name: redis_shard_2
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    ports:
+      - "6381:6379"
+    volumes:
+      - redis_shard_2_data:/data
+    networks:
+      - microservices-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # Redis Shards for Study Plan Service (3 shards)
+  redis-shard-3:
+    image: redis:7-alpine
+    container_name: redis_shard_3
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    ports:
+      - "6382:6379"
+    volumes:
+      - redis_shard_3_data:/data
+    networks:
+      - microservices-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  redis-shard-4:
+    image: redis:7-alpine
+    container_name: redis_shard_4
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    ports:
+      - "6383:6379"
+    volumes:
+      - redis_shard_4_data:/data
+    networks:
+      - microservices-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  redis-shard-5:
+    image: redis:7-alpine
+    container_name: redis_shard_5
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    ports:
+      - "6384:6379"
+    volumes:
+      - redis_shard_5_data:/data
+    networks:
+      - microservices-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
   # API Gateway
   api-gateway:
     build: ./microservices/api_gateway
@@ -164,9 +268,17 @@ services:
       - "5002:5002"
     environment:
       - DATABASE_URL=mysql+pymysql://user:password@study-plan-db:3306/study_plan_db
+      - REDIS_SHARDS=redis://redis-shard-3:6379/0,redis://redis-shard-4:6379/0,redis://redis-shard-5:6379/0
+      - REDIS_SHARD_COUNT=3
       - FLASK_DEBUG=False
     depends_on:
       study-plan-db:
+        condition: service_healthy
+      redis-shard-3:
+        condition: service_healthy
+      redis-shard-4:
+        condition: service_healthy
+      redis-shard-5:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:5002/health', timeout=5)"]
@@ -221,12 +333,20 @@ services:
     environment:
       - DATABASE_URL=mysql+pymysql://user:password@catalog-db:3306/catalog_db
       - AUTH_SERVICE_URL=http://auth-service:5004
+      - REDIS_SHARDS=redis://redis-shard-0:6379/0,redis://redis-shard-1:6379/0,redis://redis-shard-2:6379/0
+      - REDIS_SHARD_COUNT=3
       - FLASK_DEBUG=False
     depends_on:
       catalog-db:
         condition: service_healthy
       auth-service:
         condition: service_started
+      redis-shard-0:
+        condition: service_healthy
+      redis-shard-1:
+        condition: service_healthy
+      redis-shard-2:
+        condition: service_healthy
     networks:
       - microservices-network
     restart: unless-stopped
@@ -297,6 +417,18 @@ volumes:
   feedback_mysql_data:
     driver: local
   study_plan_mysql_data:
+    driver: local
+  redis_shard_0_data:
+    driver: local
+  redis_shard_1_data:
+    driver: local
+  redis_shard_2_data:
+    driver: local
+  redis_shard_3_data:
+    driver: local
+  redis_shard_4_data:
+    driver: local
+  redis_shard_5_data:
     driver: local
 
 networks:
