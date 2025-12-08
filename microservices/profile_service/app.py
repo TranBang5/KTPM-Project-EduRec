@@ -15,26 +15,79 @@ app = Flask(__name__)
 app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URL', 'mysql+pymysql://user:password@profile-db:3306/profile_db')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
+# Database connection pooling for better performance
+app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
+    'pool_size': 50,  # Increased for high load
+    'pool_recycle': 3600,
+    'pool_pre_ping': True,  # Verify connections before using
+    'max_overflow': 100,  # Increased for burst traffic
+    'pool_timeout': 60,  # Increased timeout
+    'connect_args': {
+        'connect_timeout': 10,
+        'read_timeout': 20,
+        'write_timeout': 20
+    },
+    'execution_options': {
+        'isolation_level': 'READ COMMITTED'  # Reduce lock contention
+    }
+}
+
 # Auth service URL for token verification
 AUTH_SERVICE_URL = os.getenv('AUTH_SERVICE_URL', 'http://localhost:5004')
 
 # Initialize database
 db.init_app(app)
 
+# Ensure database sessions are properly cleaned up after each request
+@app.teardown_appcontext
+def shutdown_session(exception=None):
+    """Clean up database session after each request"""
+    db.session.remove()
+
 def verify_token_with_auth_service(token):
-    """Verify JWT token with auth service"""
-    try:
-        response = requests.post(
-            f"{AUTH_SERVICE_URL}/auth/verify-token",
-            json={'token': token},
-            timeout=5
-        )
-        if response.status_code == 200:
-            return response.json()
-        return None
-    except Exception as e:
-        logger.error(f"Error verifying token: {str(e)}")
-        return None
+    """Verify JWT token with auth service with retry logic"""
+    max_retries = 2
+    retry_delay = 0.5
+    import time
+    
+    for attempt in range(max_retries + 1):
+        try:
+            # Use longer timeout - auth service may be slow due to database operations
+            # Increased timeout to handle high load scenarios
+            timeout = 30 if attempt == 0 else 20  # Longer timeout on first attempt
+            response = requests.post(
+                f"{AUTH_SERVICE_URL}/auth/verify-token",
+                json={'token': token},
+                timeout=timeout
+            )
+            if response.status_code == 200:
+                return response.json()
+            # Non-200 status, don't retry
+            logger.warning(f"Auth service returned status {response.status_code}")
+            return None
+        except requests.exceptions.Timeout as e:
+            if attempt < max_retries:
+                logger.warning(f"Timeout verifying token (attempt {attempt + 1}/{max_retries + 1}), retrying...")
+                time.sleep(retry_delay * (attempt + 1))  # Exponential backoff
+                continue
+            logger.error(f"Timeout verifying token with auth service after {max_retries + 1} attempts: {str(e)}")
+            return None
+        except requests.exceptions.ConnectionError as e:
+            if attempt < max_retries:
+                logger.warning(f"Connection error verifying token (attempt {attempt + 1}/{max_retries + 1}), retrying...")
+                time.sleep(retry_delay * (attempt + 1))
+                continue
+            logger.error(f"Connection error verifying token after {max_retries + 1} attempts: {str(e)}")
+            return None
+        except Exception as e:
+            if attempt < max_retries:
+                logger.warning(f"Error verifying token (attempt {attempt + 1}/{max_retries + 1}): {str(e)}, retrying...")
+                time.sleep(retry_delay * (attempt + 1))
+                continue
+            logger.error(f"Error verifying token after {max_retries + 1} attempts: {str(e)}")
+            return None
+    
+    return None
 
 def require_auth(f):
     """Decorator to require authentication"""
@@ -95,25 +148,30 @@ def get_profile(user_id):
         
         # If profile not found in Profile Service database, try to get from Auth Service
         if not profile:
-            logger.warning(f"User {user_id} not found in Profile Service database, trying Auth Service...")
+            logger.info(f"User {user_id} not found in Profile Service database, trying Auth Service...")
             try:
                 # Get auth header from request
                 auth_header = request.headers.get('Authorization')
                 if auth_header:
-                    # Call Auth Service to get profile
-                    auth_response = requests.get(
-                        f"{AUTH_SERVICE_URL}/auth/profile",
-                        headers={'Authorization': auth_header},
-                        timeout=5
-                    )
-                    if auth_response.status_code == 200:
-                        auth_user_data = auth_response.json()
-                        logger.info(f"Retrieved user {user_id} from Auth Service")
-                        return jsonify(auth_user_data), 200
-                    else:
-                        logger.error(f"Auth Service returned status {auth_response.status_code}")
+                    # Call Auth Service to get profile with timeout
+                    try:
+                        auth_response = requests.get(
+                            f"{AUTH_SERVICE_URL}/auth/profile",
+                            headers={'Authorization': auth_header},
+                            timeout=15  # Reduced timeout to fail faster
+                        )
+                        if auth_response.status_code == 200:
+                            auth_user_data = auth_response.json()
+                            logger.info(f"Retrieved user {user_id} from Auth Service")
+                            return jsonify(auth_user_data), 200
+                        else:
+                            logger.warning(f"Auth Service returned status {auth_response.status_code}")
+                    except requests.exceptions.Timeout:
+                        logger.warning(f"Auth Service timeout when fetching profile for user {user_id}")
+                    except requests.exceptions.ConnectionError:
+                        logger.warning(f"Auth Service connection error when fetching profile for user {user_id}")
                 else:
-                    logger.error("No Authorization header found")
+                    logger.warning("No Authorization header found for fallback")
             except Exception as e:
                 logger.error(f"Error fetching from Auth Service: {str(e)}")
             
@@ -133,20 +191,24 @@ def get_profile(user_id):
         }), 200
     except Exception as e:
         logger.error(f"Error getting profile: {str(e)}")
-        # Fallback: try Auth Service
-        try:
-            auth_header = request.headers.get('Authorization')
-            if auth_header:
-                auth_response = requests.get(
-                    f"{AUTH_SERVICE_URL}/auth/profile",
-                    headers={'Authorization': auth_header},
-                    timeout=5
-                )
-                if auth_response.status_code == 200:
-                    logger.info(f"Fallback: Retrieved user {user_id} from Auth Service")
-                    return jsonify(auth_response.json()), 200
-        except Exception as fallback_error:
-            logger.error(f"Fallback to Auth Service also failed: {str(fallback_error)}")
+        # Fallback: try Auth Service only if it's a database error
+        if 'database' in str(e).lower() or 'connection' in str(e).lower():
+            try:
+                auth_header = request.headers.get('Authorization')
+                if auth_header:
+                    try:
+                        auth_response = requests.get(
+                            f"{AUTH_SERVICE_URL}/auth/profile",
+                            headers={'Authorization': auth_header},
+                            timeout=15  # Reduced timeout
+                        )
+                        if auth_response.status_code == 200:
+                            logger.info(f"Fallback: Retrieved user {user_id} from Auth Service")
+                            return jsonify(auth_response.json()), 200
+                    except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as timeout_error:
+                        logger.warning(f"Fallback to Auth Service failed: {str(timeout_error)}")
+            except Exception as fallback_error:
+                logger.error(f"Fallback to Auth Service also failed: {str(fallback_error)}")
         
         return jsonify({'error': 'Failed to retrieve profile'}), 500
 

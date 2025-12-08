@@ -26,8 +26,34 @@ app.config['JWT_SECRET_KEY'] = os.getenv('JWT_SECRET_KEY', app.config['SECRET_KE
 app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(hours=1)
 app.config['JWT_REFRESH_TOKEN_EXPIRES'] = timedelta(days=30)
 
+# Database connection pooling for better performance
+# Reduced pool size to match database max_connections (500) across 3 instances
+# Each instance: pool_size=30, max_overflow=50 = 80 connections max
+# 3 instances × 80 = 240 connections (well within 500 limit)
+app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
+    'pool_size': 30,  # Reduced to fit within database limits
+    'pool_recycle': 3600,  # Recycle connections after 1 hour
+    'pool_pre_ping': True,  # Verify connections before using
+    'max_overflow': 50,  # Reduced to fit within database limits (total 80 connections per instance)
+    'pool_timeout': 20,  # Reduced timeout to fail faster
+    'connect_args': {
+        'connect_timeout': 10,  # Increased connection timeout
+        'read_timeout': 30,  # Increased read timeout for slow queries
+        'write_timeout': 30  # Increased write timeout for slow writes
+    },
+    'execution_options': {
+        'isolation_level': 'READ COMMITTED'  # Reduce lock contention
+    }
+}
+
 # Initialize database
 db.init_app(app)
+
+# Ensure database sessions are properly cleaned up after each request
+@app.teardown_appcontext
+def shutdown_session(exception=None):
+    """Clean up database session after each request"""
+    db.session.remove()
 
 # Email configuration
 SMTP_SERVER = os.getenv('SMTP_SERVER', 'smtp.gmail.com')
@@ -134,82 +160,183 @@ def health_check():
 
 @app.route('/auth/register', methods=['POST'])
 def register():
-    """User registration"""
-    data = request.get_json()
+    """User registration with retry logic"""
+    max_retries = 2
+    retry_delay = 0.1
     
-    required_fields = ['email', 'password', 'full_name']
-    for field in required_fields:
-        if not data.get(field):
-            return jsonify({'error': f'{field} is required'}), 400
+    for attempt in range(max_retries + 1):
+        try:
+            data = request.get_json()
+            if not data:
+                return jsonify({'error': 'No data provided'}), 400
+            
+            required_fields = ['email', 'password', 'full_name']
+            for field in required_fields:
+                if not data.get(field):
+                    return jsonify({'error': f'{field} is required'}), 400
+            
+            # Check if user already exists - use regular query to avoid deadlocks
+            # Use unique constraint on email in database instead of locking
+            try:
+                existing_user = db.session.query(User).filter_by(email=data['email']).first()
+                if existing_user:
+                    return jsonify({'error': 'Email already exists'}), 409
+            except Exception as e:
+                error_msg = str(e)
+                if 'QueuePool' in error_msg or 'pool' in error_msg.lower() or 'timeout' in error_msg.lower():
+                    if attempt < max_retries:
+                        logger.warning(f"Database connection issue during registration check (attempt {attempt + 1}), retrying...")
+                        import time
+                        time.sleep(retry_delay * (attempt + 1))
+                        continue
+                    logger.error(f"Database connection pool exhausted: {error_msg}")
+                    return jsonify({'error': 'Service temporarily unavailable, please try again'}), 503
+                logger.error(f"Error checking existing user: {error_msg}")
+                return jsonify({'error': 'Registration failed'}), 500
+            
+            # Create new user - hash password with optimized iterations for better performance
+            # Use pbkdf2:sha256 with reduced iterations (200000 instead of default 1000000)
+            # This is still secure (200K iterations is very strong) but ~5x faster
+            # check_password_hash automatically detects the method from hash string, so backward compatible
+            # Old passwords with different iterations will still verify correctly
+            try:
+                hashed_password = generate_password_hash(data['password'], method='pbkdf2:sha256:200000')
+            except Exception as e:
+                logger.error(f"Password hashing error: {str(e)}")
+                return jsonify({'error': 'Registration failed'}), 500
+            
+            new_user = User(
+                email=data['email'],
+                full_name=data['full_name'],
+                password_hash=hashed_password,
+                school=data.get('school'),
+                current_grade=data.get('current_grade'),
+                learning_goals=data.get('learning_goals'),
+                favorite_subjects=data.get('favorite_subjects'),
+                preferred_learning_method=data.get('preferred_learning_method')
+            )
+            
+            try:
+                db.session.add(new_user)
+                db.session.commit()
+                
+                # Generate JWT tokens
+                access_token = generate_jwt_token(new_user.id, 'access')
+                refresh_token = generate_jwt_token(new_user.id, 'refresh')
+                
+                return jsonify({
+                    'message': 'User registered successfully',
+                    'access_token': access_token,
+                    'refresh_token': refresh_token,
+                    'user': {
+                        'id': new_user.id,
+                        'email': new_user.email,
+                        'full_name': new_user.full_name
+                    }
+                }), 201
+                
+            except Exception as e:
+                db.session.rollback()
+                error_msg = str(e)
+                # Check if it's a duplicate key error (race condition)
+                if 'Duplicate' in error_msg or 'UNIQUE' in error_msg or 'duplicate' in error_msg.lower():
+                    return jsonify({'error': 'Email already exists'}), 409
+                # Check if it's a connection pool error
+                if 'QueuePool' in error_msg or 'pool' in error_msg.lower() or 'timeout' in error_msg.lower():
+                    if attempt < max_retries:
+                        logger.warning(f"Database connection issue during registration commit (attempt {attempt + 1}), retrying...")
+                        import time
+                        time.sleep(retry_delay * (attempt + 1))
+                        continue
+                    logger.error(f"Database connection pool exhausted during commit: {error_msg}")
+                    return jsonify({'error': 'Service temporarily unavailable, please try again'}), 503
+                logger.error(f"Registration error: {error_msg}")
+                return jsonify({'error': 'Registration failed'}), 500
+        except Exception as e:
+            if attempt < max_retries:
+                logger.warning(f"Unexpected registration error (attempt {attempt + 1}), retrying...: {str(e)}")
+                import time
+                time.sleep(retry_delay * (attempt + 1))
+                continue
+            logger.error(f"Unexpected registration error after {max_retries + 1} attempts: {str(e)}")
+            return jsonify({'error': 'Registration failed'}), 500
     
-    # Check if user already exists
-    if User.query.filter_by(email=data['email']).first():
-        return jsonify({'error': 'Email already exists'}), 409
-    
-    # Create new user
-    hashed_password = generate_password_hash(data['password'], method='pbkdf2:sha256')
-    new_user = User(
-        email=data['email'],
-        full_name=data['full_name'],
-        password_hash=hashed_password,
-        school=data.get('school'),
-        current_grade=data.get('current_grade'),
-        learning_goals=data.get('learning_goals'),
-        favorite_subjects=data.get('favorite_subjects'),
-        preferred_learning_method=data.get('preferred_learning_method')
-    )
-    
-    try:
-        db.session.add(new_user)
-        db.session.commit()
-        
-        # Generate JWT tokens
-        access_token = generate_jwt_token(new_user.id, 'access')
-        refresh_token = generate_jwt_token(new_user.id, 'refresh')
-        
-        return jsonify({
-            'message': 'User registered successfully',
-            'access_token': access_token,
-            'refresh_token': refresh_token,
-            'user': {
-                'id': new_user.id,
-                'email': new_user.email,
-                'full_name': new_user.full_name
-            }
-        }), 201
-        
-    except Exception as e:
-        db.session.rollback()
-        logger.error(f"Registration error: {str(e)}")
-        return jsonify({'error': 'Registration failed'}), 500
+    return jsonify({'error': 'Registration failed'}), 500
 
 @app.route('/auth/login', methods=['POST'])
 def login():
-    """User login"""
-    data = request.get_json()
+    """User login with retry logic"""
+    max_retries = 2
+    retry_delay = 0.1
     
-    if not data.get('email') or not data.get('password'):
-        return jsonify({'error': 'Email and password are required'}), 400
+    for attempt in range(max_retries + 1):
+        try:
+            data = request.get_json()
+            if not data:
+                return jsonify({'error': 'No data provided'}), 400
+            
+            if not data.get('email') or not data.get('password'):
+                return jsonify({'error': 'Email and password are required'}), 400
+            
+            # Use try-except for database query to handle connection issues
+            try:
+                user = User.query.filter_by(email=data['email']).first()
+            except Exception as e:
+                error_msg = str(e)
+                # Check if it's a connection pool error
+                if 'QueuePool' in error_msg or 'pool' in error_msg.lower() or 'timeout' in error_msg.lower():
+                    if attempt < max_retries:
+                        logger.warning(f"Database connection issue during login (attempt {attempt + 1}), retrying...")
+                        import time
+                        time.sleep(retry_delay * (attempt + 1))
+                        continue
+                    logger.error(f"Database connection pool exhausted after {max_retries + 1} attempts: {error_msg}")
+                    return jsonify({'error': 'Service temporarily unavailable, please try again'}), 503
+                logger.error(f"Database query error during login: {error_msg}")
+                return jsonify({'error': 'Login failed'}), 500
+            
+            if not user:
+                # Don't reveal if user exists or not for security
+                return jsonify({'error': 'Invalid email or password'}), 401
+            
+            # Verify password with timeout handling
+            try:
+                password_valid = check_password_hash(user.password_hash, data['password'])
+            except Exception as e:
+                logger.error(f"Password verification error: {str(e)}")
+                return jsonify({'error': 'Login failed'}), 500
+            
+            if not password_valid:
+                return jsonify({'error': 'Invalid email or password'}), 401
+            
+            # Generate JWT tokens
+            try:
+                access_token = generate_jwt_token(user.id, 'access')
+                refresh_token = generate_jwt_token(user.id, 'refresh')
+            except Exception as e:
+                logger.error(f"Token generation error: {str(e)}")
+                return jsonify({'error': 'Login failed'}), 500
+            
+            return jsonify({
+                'message': 'Login successful',
+                'access_token': access_token,
+                'refresh_token': refresh_token,
+                'user': {
+                    'id': user.id,
+                    'email': user.email,
+                    'full_name': user.full_name
+                }
+            }), 200
+        except Exception as e:
+            if attempt < max_retries:
+                logger.warning(f"Unexpected login error (attempt {attempt + 1}), retrying...: {str(e)}")
+                import time
+                time.sleep(retry_delay * (attempt + 1))
+                continue
+            logger.error(f"Unexpected login error after {max_retries + 1} attempts: {str(e)}")
+            return jsonify({'error': 'Login failed'}), 500
     
-    user = User.query.filter_by(email=data['email']).first()
-    
-    if not user or not check_password_hash(user.password_hash, data['password']):
-        return jsonify({'error': 'Invalid email or password'}), 401
-    
-    # Generate JWT tokens
-    access_token = generate_jwt_token(user.id, 'access')
-    refresh_token = generate_jwt_token(user.id, 'refresh')
-    
-    return jsonify({
-        'message': 'Login successful',
-        'access_token': access_token,
-        'refresh_token': refresh_token,
-        'user': {
-            'id': user.id,
-            'email': user.email,
-            'full_name': user.full_name
-        }
-    }), 200
+    return jsonify({'error': 'Login failed'}), 500
 
 @app.route('/auth/refresh', methods=['POST'])
 def refresh_token():
@@ -273,8 +400,8 @@ def reset_password():
     if not user or user.reset_token_expires < datetime.utcnow():
         return jsonify({'error': 'Invalid or expired reset token'}), 400
     
-    # Update password
-    user.password_hash = generate_password_hash(new_password, method='pbkdf2:sha256')
+    # Update password - use optimized hashing method (200K iterations for better performance)
+    user.password_hash = generate_password_hash(new_password, method='pbkdf2:sha256:200000')
     user.reset_token = None
     user.reset_token_expires = None
     db.session.commit()

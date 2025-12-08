@@ -5,6 +5,7 @@ import numpy as np
 import os
 import json
 import sys
+import threading
 
 # Add parent directory to path to import models
 sys.path.append('/app')
@@ -30,8 +31,10 @@ app.config['DEBUG'] = False
 WEIGHTS_DIR = os.getenv('WEIGHTS_DIR', '/app/checkpoints')
 BRUTEFORCE_DATA_PATH = os.getenv('BRUTEFORCE_DATA_PATH', '/app/bruteforce_data.npz')
 
-# Global model variable
+# Global model variable and lock for thread-safe loading
 model = None
+model_lock = threading.Lock()
+model_loading = False
 
 def initialize_model():
     """Initialize the recommendation model"""
@@ -105,57 +108,118 @@ def health_check():
     })
 
 def ensure_model_loaded():
-    """Ensure model is loaded, load it if not"""
-    global model
-    if model is None:
-        logger.info("Model not loaded, initializing now...")
+    """Ensure model is loaded, load it if not (thread-safe)"""
+    global model, model_loading
+    
+    # Fast path: model already loaded
+    if model is not None:
+        return
+    
+    # Acquire lock to prevent concurrent initialization
+    with model_lock:
+        # Double-check after acquiring lock
+        if model is not None:
+            return
+        
+        # Check if another thread is already loading
+        if model_loading:
+            logger.warning("Model is being loaded by another thread, waiting...")
+            # Wait for model to be loaded (with timeout)
+            import time
+            max_wait = 300  # 5 minutes max wait
+            wait_time = 0
+            while model_loading and wait_time < max_wait:
+                time.sleep(1)
+                wait_time += 1
+                if model is not None:
+                    logger.info("Model loaded by another thread")
+                    return
+            
+            if model is None:
+                raise Exception("Model loading timeout or failed")
+            return
+        
+        # Mark as loading
+        model_loading = True
         try:
+            logger.info("Model not loaded, initializing now...")
             initialize_model()
+            logger.info("Model loaded successfully")
         except Exception as e:
             logger.error(f"Failed to load model on demand: {str(e)}")
             raise
+        finally:
+            model_loading = False
 
 @app.route('/recommendations/generate', methods=['POST'])
 def generate_recommendations():
     """Generate recommendations for a user"""
     try:
         # Load model if not already loaded (lazy loading)
-        ensure_model_loaded()
+        try:
+            ensure_model_loaded()
+        except Exception as e:
+            logger.error(f"Model loading error: {str(e)}")
+            return jsonify({'error': 'Model not available'}), 503
         
         if model is None:
-            return jsonify({'error': 'Model not initialized'}), 500
+            return jsonify({'error': 'Model not initialized'}), 503
 
         data = request.get_json()
         if not data:
             return jsonify({'error': 'No data provided'}), 400
 
-        # Extract user features
+        # Extract user features with defaults
         user_features = {
-            'truong_hoc_hien_tai': str(data.get('school', '')).strip().lower(),
-            'khoi_lop_hien_tai': str(data.get('current_grade', '')).strip().lower(),
-            'muc_tieu_hoc': str(data.get('learning_goals', '')).strip().lower(),
-            'mon_hoc_yeu_thich': str(data.get('favorite_subjects', '')).strip().lower(),
-            'phuong_phap_hoc_yeu_thich': str(data.get('preferred_learning_method', '')).strip().lower()
+            'truong_hoc_hien_tai': str(data.get('school', '')).strip().lower() or 'unknown',
+            'khoi_lop_hien_tai': str(data.get('current_grade', '')).strip().lower() or 'unknown',
+            'muc_tieu_hoc': str(data.get('learning_goals', '')).strip().lower() or 'unknown',
+            'mon_hoc_yeu_thich': str(data.get('favorite_subjects', '')).strip().lower() or 'unknown',
+            'phuong_phap_hoc_yeu_thich': str(data.get('preferred_learning_method', '')).strip().lower() or 'unknown'
         }
 
-        # Convert to model input format
-        user_data = {k: tf.convert_to_tensor([v.encode('utf-8')], dtype=tf.string) for k, v in user_features.items()}
-        user_dataset = tf.data.Dataset.from_tensor_slices(user_data).batch(1)
+        # Convert to model input format with error handling
+        try:
+            user_data = {k: tf.convert_to_tensor([v.encode('utf-8')], dtype=tf.string) for k, v in user_features.items()}
+            user_dataset = tf.data.Dataset.from_tensor_slices(user_data).batch(1)
+        except Exception as e:
+            logger.error(f"Error preparing model input: {str(e)}")
+            return jsonify({'error': 'Invalid input data'}), 400
 
-        # Get recommendations
-        for batch in user_dataset:
-            student_embeddings = model.student_model(batch)
-            scores, top_k_ids = model.bruteforce(student_embeddings)
-            scores = scores.numpy()[0]
-            top_k_ids = top_k_ids.numpy().astype(str)[0]
-            break
+        # Get recommendations with error handling
+        try:
+            recommendations_result = None
+            for batch in user_dataset:
+                student_embeddings = model.student_model(batch)
+                if model.bruteforce is None:
+                    logger.error("Bruteforce model not loaded")
+                    return jsonify({'error': 'Recommendation model not ready'}), 503
+                scores, top_k_ids = model.bruteforce(student_embeddings)
+                scores = scores.numpy()[0]
+                top_k_ids = top_k_ids.numpy().astype(str)[0]
+                recommendations_result = (scores, top_k_ids)
+                break
+            
+            if recommendations_result is None:
+                return jsonify({'error': 'Failed to generate recommendations'}), 500
+            
+            scores, top_k_ids = recommendations_result
+        except Exception as e:
+            logger.error(f"Error during model inference: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return jsonify({'error': 'Failed to generate recommendations'}), 500
 
         # Process recommendations
         recommendations = {'courses': [], 'tutors': [], 'materials': []}
         item_scores = {}
         
-        for id_, score in zip(top_k_ids, scores):
-            item_scores[id_] = float(score)
+        try:
+            for id_, score in zip(top_k_ids, scores):
+                item_scores[str(id_)] = float(score)
+        except Exception as e:
+            logger.error(f"Error processing recommendation scores: {str(e)}")
+            return jsonify({'error': 'Failed to process recommendations'}), 500
 
         # Categorize recommendations
         for item_id, score in item_scores.items():
@@ -188,7 +252,7 @@ def generate_recommendations():
         logger.error(f"Error generating recommendations: {str(e)}")
         import traceback
         logger.error(traceback.format_exc())
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'error': 'Internal server error'}), 500
 
 @app.route('/recommendations/models', methods=['GET'])
 def get_model_info():

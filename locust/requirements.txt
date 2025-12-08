@@ -1,3 +1,6 @@
 # Locust dependencies are already in the base image
 # Add any additional dependencies here if needed
 
+
+gunicorn
+gevent

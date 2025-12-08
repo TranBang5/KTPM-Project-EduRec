@@ -16,26 +16,78 @@ app = Flask(__name__)
 app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URL', 'mysql+pymysql://user:password@catalog-db:3306/catalog_db')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
+# Database connection pooling for better performance
+app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
+    'pool_size': 20,  # Increased for high load
+    'pool_recycle': 3600,  # Recycle connections after 1 hour
+    'pool_pre_ping': True,  # Verify connections before using
+    'max_overflow': 40,  # Increased for burst traffic
+    'pool_timeout': 30,  # Timeout for getting connection from pool
+    'connect_args': {
+        'connect_timeout': 10,
+        'read_timeout': 20,
+        'write_timeout': 20
+    },
+    'execution_options': {
+        'isolation_level': 'READ COMMITTED'  # Reduce lock contention
+    }
+}
+
 # Auth service URL for token verification
 AUTH_SERVICE_URL = os.getenv('AUTH_SERVICE_URL', 'http://localhost:5004')
 
 # Initialize database
 db.init_app(app)
 
+# Ensure database sessions are properly cleaned up after each request
+@app.teardown_appcontext
+def shutdown_session(exception=None):
+    """Clean up database session after each request"""
+    db.session.remove()
+
 def verify_token_with_auth_service(token):
-    """Verify JWT token with auth service"""
-    try:
-        response = requests.post(
-            f"{AUTH_SERVICE_URL}/auth/verify-token",
-            json={'token': token},
-            timeout=5
-        )
-        if response.status_code == 200:
-            return response.json()
-        return None
-    except Exception as e:
-        logger.error(f"Error verifying token: {str(e)}")
-        return None
+    """Verify JWT token with auth service with retry logic"""
+    max_retries = 2
+    retry_delay = 1
+    
+    for attempt in range(max_retries):
+        try:
+            response = requests.post(
+                f"{AUTH_SERVICE_URL}/auth/verify-token",
+                json={'token': token},
+                timeout=20  # Increased timeout to handle slow auth service
+            )
+            if response.status_code == 200:
+                return response.json()
+            elif response.status_code >= 500:
+                # Server error, retry
+                if attempt < max_retries - 1:
+                    logger.warning(f"Auth service returned {response.status_code}, retrying...")
+                    import time
+                    time.sleep(retry_delay)
+                    continue
+            return None
+        except requests.exceptions.Timeout as e:
+            if attempt < max_retries - 1:
+                logger.warning(f"Token verification timeout (attempt {attempt + 1}), retrying...")
+                import time
+                time.sleep(retry_delay)
+                continue
+            logger.error(f"Token verification timeout after {max_retries} attempts: {str(e)}")
+            return None
+        except requests.exceptions.ConnectionError as e:
+            if attempt < max_retries - 1:
+                logger.warning(f"Auth service connection error (attempt {attempt + 1}), retrying...")
+                import time
+                time.sleep(retry_delay)
+                continue
+            logger.error(f"Auth service connection error after {max_retries} attempts: {str(e)}")
+            return None
+        except Exception as e:
+            logger.error(f"Error verifying token: {str(e)}")
+            return None
+    
+    return None
 
 def require_auth(f):
     """Decorator to require authentication"""
@@ -148,53 +200,69 @@ def health_check():
 @require_auth
 def get_courses():
     """Get courses with filtering and pagination"""
-    page = request.args.get('page', 1, type=int)
-    per_page = request.args.get('per_page', 10, type=int)
-    per_page = min(per_page, 50)
-    
-    # Get filters
-    filters = {
-        'subject': request.args.get('subject'),
-        'grade_level': request.args.get('grade_level'),
-        'search': request.args.get('search')
-    }
-    
-    # Build query
-    query = Course.query
-    
-    if filters['subject']:
-        query = query.filter(Course.subject.like(f"%{filters['subject']}%"))
-    if filters['grade_level']:
-        query = query.filter(Course.grade_level.like(f"%{filters['grade_level']}%"))
-    if filters['search']:
-        query = query.filter(Course.name.like(f"%{filters['search']}%"))
-    
-    # Get total count
-    total = query.count()
-    
-    # Apply pagination
-    courses = query.paginate(page=page, per_page=per_page, error_out=False)
-    
-    return jsonify({
-        'courses': [{
-            'id': course.id,
-            'name': course.name,
-            'subject': course.subject,
-            'grade_level': course.grade_level,
-            'cost': course.cost,
-            'teaching_method': course.teaching_method,
-            'teaching_time': course.teaching_time,
-            'location': course.location
-        } for course in courses.items],
-        'pagination': {
-            'page': page,
-            'per_page': per_page,
-            'total': total,
-            'pages': courses.pages,
-            'has_next': courses.has_next,
-            'has_prev': courses.has_prev
+    try:
+        page = request.args.get('page', 1, type=int)
+        per_page = request.args.get('per_page', 10, type=int)
+        per_page = min(per_page, 50)
+        
+        # Get filters
+        filters = {
+            'subject': request.args.get('subject'),
+            'grade_level': request.args.get('grade_level'),
+            'search': request.args.get('search')
         }
-    }), 200
+        
+        # Build query with error handling
+        try:
+            query = Course.query
+            
+            if filters['subject']:
+                query = query.filter(Course.subject.like(f"%{filters['subject']}%"))
+            if filters['grade_level']:
+                query = query.filter(Course.grade_level.like(f"%{filters['grade_level']}%"))
+            if filters['search']:
+                query = query.filter(Course.name.like(f"%{filters['search']}%"))
+            
+            # Get total count with timeout handling
+            try:
+                total = query.count()
+            except Exception as count_error:
+                logger.error(f"Error counting courses: {str(count_error)}")
+                total = 0
+            
+            # Apply pagination with error handling
+            try:
+                courses = query.paginate(page=page, per_page=per_page, error_out=False)
+            except Exception as pagination_error:
+                logger.error(f"Error paginating courses: {str(pagination_error)}")
+                return jsonify({'error': 'Failed to retrieve courses'}), 500
+            
+            return jsonify({
+                'courses': [{
+                    'id': course.id,
+                    'name': course.name,
+                    'subject': course.subject,
+                    'grade_level': course.grade_level,
+                    'cost': course.cost,
+                    'teaching_method': course.teaching_method,
+                    'teaching_time': course.teaching_time,
+                    'location': course.location
+                } for course in courses.items],
+                'pagination': {
+                    'page': page,
+                    'per_page': per_page,
+                    'total': total,
+                    'pages': courses.pages,
+                    'has_next': courses.has_next,
+                    'has_prev': courses.has_prev
+                }
+            }), 200
+        except Exception as query_error:
+            logger.error(f"Database query error: {str(query_error)}")
+            return jsonify({'error': 'Failed to retrieve courses'}), 500
+    except Exception as e:
+        logger.error(f"Unexpected error in get_courses: {str(e)}")
+        return jsonify({'error': 'Internal server error'}), 500
 
 @app.route('/catalog/courses/<int:course_id>', methods=['GET'])
 @require_auth
@@ -315,47 +383,60 @@ def delete_course(course_id):
 @require_auth
 def get_tutors():
     """Get tutors with filtering and pagination"""
-    page = request.args.get('page', 1, type=int)
-    per_page = request.args.get('per_page', 10, type=int)
-    per_page = min(per_page, 50)
-    
-    filters = {
-        'subject': request.args.get('subject'),
-        'grade': request.args.get('grade'),
-        'search': request.args.get('search')
-    }
-    
-    query = Tutor.query
-    
-    if filters['subject']:
-        query = query.filter(Tutor.subject.like(f"%{filters['subject']}%"))
-    if filters['grade']:
-        query = query.filter(Tutor.specialized_grade.like(f"%{filters['grade']}%"))
-    if filters['search']:
-        query = query.filter(Tutor.name.like(f"%{filters['search']}%"))
-    
-    total = query.count()
-    tutors = query.paginate(page=page, per_page=per_page, error_out=False)
-    
-    return jsonify({
-        'tutors': [{
-            'id': tutor.id,
-            'name': tutor.name,
-            'subject': tutor.subject,
-            'specialized_grade': tutor.specialized_grade,
-            'teaching_method': tutor.teaching_method,
-            'teaching_time': tutor.teaching_time,
-            'experience': tutor.experience
-        } for tutor in tutors.items],
-        'pagination': {
-            'page': page,
-            'per_page': per_page,
-            'total': total,
-            'pages': tutors.pages,
-            'has_next': tutors.has_next,
-            'has_prev': tutors.has_prev
+    try:
+        page = request.args.get('page', 1, type=int)
+        per_page = request.args.get('per_page', 10, type=int)
+        per_page = min(per_page, 50)
+        
+        filters = {
+            'subject': request.args.get('subject'),
+            'grade': request.args.get('grade'),
+            'search': request.args.get('search')
         }
-    }), 200
+        
+        try:
+            query = Tutor.query
+            
+            if filters['subject']:
+                query = query.filter(Tutor.subject.like(f"%{filters['subject']}%"))
+            if filters['grade']:
+                query = query.filter(Tutor.specialized_grade.like(f"%{filters['grade']}%"))
+            if filters['search']:
+                query = query.filter(Tutor.name.like(f"%{filters['search']}%"))
+            
+            try:
+                total = query.count()
+            except Exception as count_error:
+                logger.error(f"Error counting tutors: {str(count_error)}")
+                total = 0
+            
+            tutors = query.paginate(page=page, per_page=per_page, error_out=False)
+            
+            return jsonify({
+                'tutors': [{
+                    'id': tutor.id,
+                    'name': tutor.name,
+                    'subject': tutor.subject,
+                    'specialized_grade': tutor.specialized_grade,
+                    'teaching_method': tutor.teaching_method,
+                    'teaching_time': tutor.teaching_time,
+                    'experience': tutor.experience
+                } for tutor in tutors.items],
+                'pagination': {
+                    'page': page,
+                    'per_page': per_page,
+                    'total': total,
+                    'pages': tutors.pages,
+                    'has_next': tutors.has_next,
+                    'has_prev': tutors.has_prev
+                }
+            }), 200
+        except Exception as query_error:
+            logger.error(f"Database query error: {str(query_error)}")
+            return jsonify({'error': 'Failed to retrieve tutors'}), 500
+    except Exception as e:
+        logger.error(f"Unexpected error in get_tutors: {str(e)}")
+        return jsonify({'error': 'Internal server error'}), 500
 
 @app.route('/catalog/tutors/<int:tutor_id>', methods=['GET'])
 @require_auth
@@ -381,49 +462,62 @@ def get_tutor(tutor_id):
 @require_auth
 def get_materials():
     """Get materials with filtering and pagination"""
-    page = request.args.get('page', 1, type=int)
-    per_page = request.args.get('per_page', 10, type=int)
-    per_page = min(per_page, 50)
-    
-    filters = {
-        'subject': request.args.get('subject'),
-        'grade_level': request.args.get('grade_level'),
-        'material_type': request.args.get('material_type'),
-        'search': request.args.get('search')
-    }
-    
-    query = Material.query
-    
-    if filters['subject']:
-        query = query.filter(Material.subject.like(f"%{filters['subject']}%"))
-    if filters['grade_level']:
-        query = query.filter(Material.grade_level.like(f"%{filters['grade_level']}%"))
-    if filters['material_type']:
-        query = query.filter(Material.material_type.like(f"%{filters['material_type']}%"))
-    if filters['search']:
-        query = query.filter(Material.name.like(f"%{filters['search']}%"))
-    
-    total = query.count()
-    materials = query.paginate(page=page, per_page=per_page, error_out=False)
-    
-    return jsonify({
-        'materials': [{
-            'id': material.id,
-            'name': material.name,
-            'subject': material.subject,
-            'grade_level': material.grade_level,
-            'material_type': material.material_type,
-            'description': material.description
-        } for material in materials.items],
-        'pagination': {
-            'page': page,
-            'per_page': per_page,
-            'total': total,
-            'pages': materials.pages,
-            'has_next': materials.has_next,
-            'has_prev': materials.has_prev
+    try:
+        page = request.args.get('page', 1, type=int)
+        per_page = request.args.get('per_page', 10, type=int)
+        per_page = min(per_page, 50)
+        
+        filters = {
+            'subject': request.args.get('subject'),
+            'grade_level': request.args.get('grade_level'),
+            'material_type': request.args.get('material_type'),
+            'search': request.args.get('search')
         }
-    }), 200
+        
+        try:
+            query = Material.query
+            
+            if filters['subject']:
+                query = query.filter(Material.subject.like(f"%{filters['subject']}%"))
+            if filters['grade_level']:
+                query = query.filter(Material.grade_level.like(f"%{filters['grade_level']}%"))
+            if filters['material_type']:
+                query = query.filter(Material.material_type.like(f"%{filters['material_type']}%"))
+            if filters['search']:
+                query = query.filter(Material.name.like(f"%{filters['search']}%"))
+            
+            try:
+                total = query.count()
+            except Exception as count_error:
+                logger.error(f"Error counting materials: {str(count_error)}")
+                total = 0
+            
+            materials = query.paginate(page=page, per_page=per_page, error_out=False)
+            
+            return jsonify({
+                'materials': [{
+                    'id': material.id,
+                    'name': material.name,
+                    'subject': material.subject,
+                    'grade_level': material.grade_level,
+                    'material_type': material.material_type,
+                    'description': material.description
+                } for material in materials.items],
+                'pagination': {
+                    'page': page,
+                    'per_page': per_page,
+                    'total': total,
+                    'pages': materials.pages,
+                    'has_next': materials.has_next,
+                    'has_prev': materials.has_prev
+                }
+            }), 200
+        except Exception as query_error:
+            logger.error(f"Database query error: {str(query_error)}")
+            return jsonify({'error': 'Failed to retrieve materials'}), 500
+    except Exception as e:
+        logger.error(f"Unexpected error in get_materials: {str(e)}")
+        return jsonify({'error': 'Internal server error'}), 500
 
 @app.route('/catalog/materials/<int:material_id>', methods=['GET'])
 @require_auth

@@ -8,6 +8,7 @@ services:
       MYSQL_DATABASE: auth_db
       MYSQL_USER: user
       MYSQL_PASSWORD: password
+    command: --max-connections=500 --innodb-buffer-pool-size=512M
     ports:
       - "3307:3306"
     volumes:

@@ -43,11 +43,26 @@ class EduRecUser(HttpUser):
             "preferred_learning_method": "Online"
         }
         
-        with self.client.post("/auth/register", json=register_data, catch_response=True) as response:
+        with self.client.post("/auth/register", json=register_data, catch_response=True, timeout=60) as response:
             if response.status_code in [200, 201]:
+                try:
+                    data = response.json()
+                    self.access_token = data.get("access_token")
+                    self.user_id = data.get("user_id") or data.get("user", {}).get("id")
+                    response.success()
+                except:
+                    response.success()  # Still mark as success if we can't parse
+            elif response.status_code == 409:
+                # Email already exists - this is OK, user might have been created
                 response.success()
+            elif response.status_code == 504:
+                response.failure(f"Registration timeout: {response.status_code}")
             else:
-                response.failure(f"Registration failed: {response.status_code}")
+                try:
+                    error_msg = response.json().get('error', f"Status {response.status_code}")
+                except:
+                    error_msg = f"Status {response.status_code}"
+                response.failure(f"Registration failed ({response.status_code}): {error_msg}")
     
     def login(self):
         """Login and get access token"""
@@ -56,14 +71,23 @@ class EduRecUser(HttpUser):
             "password": self.user_password
         }
         
-        with self.client.post("/auth/login", json=login_data, catch_response=True) as response:
+        with self.client.post("/auth/login", json=login_data, catch_response=True, timeout=60) as response:
             if response.status_code == 200:
-                data = response.json()
-                self.access_token = data.get("access_token")
-                self.user_id = data.get("user_id")
-                response.success()
+                try:
+                    data = response.json()
+                    self.access_token = data.get("access_token")
+                    self.user_id = data.get("user_id") or data.get("user", {}).get("id")
+                    response.success()
+                except:
+                    response.success()  # Still mark as success if we can't parse
+            elif response.status_code == 504:
+                response.failure(f"Login timeout: {response.status_code}")
             else:
-                response.failure(f"Login failed: {response.status_code}")
+                try:
+                    error_msg = response.json().get('error', f"Status {response.status_code}")
+                except:
+                    error_msg = f"Status {response.status_code}"
+                response.failure(f"Login failed ({response.status_code}): {error_msg}")
     
     @task(3)
     def get_health(self):
@@ -89,12 +113,28 @@ class EduRecUser(HttpUser):
             },
             headers=headers,
             name="Generate Recommendations",
-            catch_response=True
+            catch_response=True,
+            timeout=180  # 3 minutes timeout
         ) as response:
             if response.status_code == 200:
-                response.success()
+                try:
+                    data = response.json()
+                    if data.get('success'):
+                        response.success()
+                    else:
+                        response.failure(f"Invalid response: {data.get('error', 'Unknown error')}")
+                except:
+                    response.success()
+            elif response.status_code == 504:
+                response.failure(f"Gateway timeout (504): Model may still be loading")
+            elif response.status_code == 503:
+                response.failure(f"Service unavailable (503): Model not loaded")
             else:
-                response.failure(f"Failed to get recommendations: {response.status_code}")
+                try:
+                    error_msg = response.json().get('error', f"Status {response.status_code}")
+                except:
+                    error_msg = f"Status {response.status_code}"
+                response.failure(f"Failed to get recommendations ({response.status_code}): {error_msg}")
     
     @task(4)
     def get_study_plan(self):
@@ -391,7 +431,11 @@ class ApiGatewayUser(HttpUser):
     @task(10)
     def test_api_gateway_health(self):
         """Test API Gateway health endpoint"""
-        self.client.get("/", name="API Gateway - Root")
+        with self.client.get("/", name="API Gateway - Root", catch_response=True, timeout=5) as response:
+            if response.status_code == 200:
+                response.success()
+            else:
+                response.failure(f"Status {response.status_code}")
     
     @task(5)
     def test_service_health(self):
@@ -456,11 +500,35 @@ class RecommendationUser(HttpUser):
             json=recommendation_data,
             headers=headers,
             name="Recommendation - Generate",
-            catch_response=True
+            catch_response=True,
+            timeout=180  # 3 minutes timeout for model inference
         ) as response:
             if response.status_code == 200:
-                response.success()
+                try:
+                    data = response.json()
+                    if data.get('success') and data.get('recommendations'):
+                        response.success()
+                    else:
+                        response.failure(f"Invalid response format: {data}")
+                except:
+                    response.success()  # Still mark as success if we can't parse
+            elif response.status_code == 504:
+                # Gateway timeout - model might still be loading
+                try:
+                    error_data = response.json()
+                    if 'model may still be loading' in error_data.get('error', '').lower():
+                        response.failure(f"Model still loading (504): {error_data.get('error', 'Timeout')}")
+                    else:
+                        response.failure(f"Gateway timeout (504): {error_data.get('error', 'Timeout')}")
+                except:
+                    response.failure(f"Gateway timeout (504)")
+            elif response.status_code == 503:
+                response.failure(f"Service unavailable (503): Model may not be loaded yet")
             else:
-                response.failure(f"Failed to generate recommendations: {response.status_code}")
+                try:
+                    error_msg = response.json().get('error', f"Status {response.status_code}")
+                except:
+                    error_msg = f"Status {response.status_code}"
+                response.failure(f"Failed to generate recommendations ({response.status_code}): {error_msg}")
     
 
