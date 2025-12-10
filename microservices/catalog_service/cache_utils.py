@@ -11,7 +11,6 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# Initialize sharded cache if REDIS_SHARDS is set, otherwise use single cache
 use_sharding = os.getenv('REDIS_SHARDS') is not None
 
 if use_sharding:
@@ -25,9 +24,7 @@ def make_cache_key(*args, **kwargs):
     """Create a cache key from request parameters"""
     # Get query parameters
     params = dict(request.args)
-    # Sort params for consistent keys
     params_str = json.dumps(params, sort_keys=True)
-    # Create hash for long keys
     params_hash = hashlib.md5(params_str.encode()).hexdigest()[:8]
     return f"catalog:{':'.join(str(arg) for arg in args)}:{params_hash}"
 

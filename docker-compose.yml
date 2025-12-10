@@ -209,14 +209,12 @@ services:
       retries: 5
     restart: unless-stopped
 
-  # API Gateway
-  api-gateway:
+  # API Gateway replicas for load balancing
+  api-gateway-1:
     build: ./microservices/api_gateway
-    container_name: api_gateway
-    ports:
-      - "5000:5000"
+    container_name: api_gateway_1
     environment:
-      - AUTH_SERVICE_URL=http://auth-service:5004
+      - AUTH_SERVICE_URL=http://nginx-lb
       - RECOMMENDATION_SERVICE_URL=http://recommendation-service:5001
       - STUDY_PLAN_SERVICE_URL=http://study-plan-service:5002
       - FEEDBACK_SERVICE_URL=http://feedback-service:5003
@@ -224,7 +222,63 @@ services:
       - PROFILE_SERVICE_URL=http://profile-service:5006
       - FLASK_DEBUG=False
     depends_on:
-      auth-service:
+      auth-service-1:
+        condition: service_started
+      recommendation-service:
+        condition: service_started
+      study-plan-service:
+        condition: service_started
+      feedback-service:
+        condition: service_started
+      catalog-service:
+        condition: service_started
+      profile-service:
+        condition: service_started
+    networks:
+      - microservices-network
+    restart: unless-stopped
+
+  api-gateway-2:
+    build: ./microservices/api_gateway
+    container_name: api_gateway_2
+    environment:
+      - AUTH_SERVICE_URL=http://nginx-lb
+      - RECOMMENDATION_SERVICE_URL=http://recommendation-service:5001
+      - STUDY_PLAN_SERVICE_URL=http://study-plan-service:5002
+      - FEEDBACK_SERVICE_URL=http://feedback-service:5003
+      - CATALOG_SERVICE_URL=http://catalog-service:5005
+      - PROFILE_SERVICE_URL=http://profile-service:5006
+      - FLASK_DEBUG=False
+    depends_on:
+      auth-service-1:
+        condition: service_started
+      recommendation-service:
+        condition: service_started
+      study-plan-service:
+        condition: service_started
+      feedback-service:
+        condition: service_started
+      catalog-service:
+        condition: service_started
+      profile-service:
+        condition: service_started
+    networks:
+      - microservices-network
+    restart: unless-stopped
+
+  api-gateway-3:
+    build: ./microservices/api_gateway
+    container_name: api_gateway_3
+    environment:
+      - AUTH_SERVICE_URL=http://nginx-lb
+      - RECOMMENDATION_SERVICE_URL=http://recommendation-service:5001
+      - STUDY_PLAN_SERVICE_URL=http://study-plan-service:5002
+      - FEEDBACK_SERVICE_URL=http://feedback-service:5003
+      - CATALOG_SERVICE_URL=http://catalog-service:5005
+      - PROFILE_SERVICE_URL=http://profile-service:5006
+      - FLASK_DEBUG=False
+    depends_on:
+      auth-service-1:
         condition: service_started
       recommendation-service:
         condition: service_started
@@ -306,12 +360,10 @@ services:
       - microservices-network
     restart: unless-stopped
 
-  # Auth Service
-  auth-service:
+  # Auth Service replicas for load balancing
+  auth-service-1:
     build: ./microservices/auth_service
-    container_name: auth_service
-    ports:
-      - "5004:5004"
+    container_name: auth_service_1
     environment:
       - DATABASE_URL=mysql+pymysql://user:password@auth-db:3306/auth_db
       - SECRET_KEY=your-secret-key-change-in-production
@@ -324,6 +376,59 @@ services:
       - microservices-network
     restart: unless-stopped
 
+  auth-service-2:
+    build: ./microservices/auth_service
+    container_name: auth_service_2
+    environment:
+      - DATABASE_URL=mysql+pymysql://user:password@auth-db:3306/auth_db
+      - SECRET_KEY=your-secret-key-change-in-production
+      - JWT_SECRET_KEY=your-jwt-secret-key-change-in-production
+      - FLASK_DEBUG=False
+    depends_on:
+      auth-db:
+        condition: service_healthy
+    networks:
+      - microservices-network
+    restart: unless-stopped
+
+  auth-service-3:
+    build: ./microservices/auth_service
+    container_name: auth_service_3
+    environment:
+      - DATABASE_URL=mysql+pymysql://user:password@auth-db:3306/auth_db
+      - SECRET_KEY=your-secret-key-change-in-production
+      - JWT_SECRET_KEY=your-jwt-secret-key-change-in-production
+      - FLASK_DEBUG=False
+    depends_on:
+      auth-db:
+        condition: service_healthy
+    networks:
+      - microservices-network
+    restart: unless-stopped
+
+  # Nginx load balancer
+  nginx-lb:
+    build: ./nginx
+    container_name: nginx_lb
+    ports:
+      - "80:80"
+    depends_on:
+      api-gateway-1:
+        condition: service_started
+      api-gateway-2:
+        condition: service_started
+      api-gateway-3:
+        condition: service_started
+      auth-service-1:
+        condition: service_started
+      auth-service-2:
+        condition: service_started
+      auth-service-3:
+        condition: service_started
+    networks:
+      - microservices-network
+    restart: unless-stopped
+
   # Catalog Service
   catalog-service:
     build: ./microservices/catalog_service
@@ -332,14 +437,14 @@ services:
       - "5005:5005"
     environment:
       - DATABASE_URL=mysql+pymysql://user:password@catalog-db:3306/catalog_db
-      - AUTH_SERVICE_URL=http://auth-service:5004
+      - AUTH_SERVICE_URL=http://nginx-lb
       - REDIS_SHARDS=redis://redis-shard-0:6379/0,redis://redis-shard-1:6379/0,redis://redis-shard-2:6379/0
       - REDIS_SHARD_COUNT=3
       - FLASK_DEBUG=False
     depends_on:
       catalog-db:
         condition: service_healthy
-      auth-service:
+      auth-service-1:
         condition: service_started
       redis-shard-0:
         condition: service_healthy
@@ -359,12 +464,12 @@ services:
       - "5006:5006"
     environment:
       - DATABASE_URL=mysql+pymysql://user:password@profile-db:3306/profile_db
-      - AUTH_SERVICE_URL=http://auth-service:5004
+      - AUTH_SERVICE_URL=http://nginx-lb
       - FLASK_DEBUG=False
     depends_on:
       profile-db:
         condition: service_healthy
-      auth-service:
+      auth-service-1:
         condition: service_started
     networks:
       - microservices-network
@@ -379,11 +484,11 @@ services:
     ports:
       - "8080:8080"
     environment:
-      - API_GATEWAY_URL=http://api-gateway:5000
+      - API_GATEWAY_URL=http://nginx-lb
       - SECRET_KEY=your-secret-key-change-in-production
       - FLASK_DEBUG=False
     depends_on:
-      - api-gateway
+      - nginx-lb
     networks:
       - microservices-network
     restart: unless-stopped
@@ -400,9 +505,9 @@ services:
     volumes:
       - ./locustfile.py:/mnt/locust/locustfile.py:ro
     working_dir: /mnt/locust
-    command: ["-f", "/mnt/locust/locustfile.py", "--host", "http://api-gateway:5000", "--web-host", "0.0.0.0"]
+    command: ["-f", "/mnt/locust/locustfile.py", "--host", "http://nginx-lb", "--web-host", "0.0.0.0"]
     depends_on:
-      - api-gateway
+      - nginx-lb
     networks:
       - microservices-network
     restart: unless-stopped

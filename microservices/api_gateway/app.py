@@ -197,10 +197,10 @@ def recommendations():
     try:
         if request.method == 'GET':
             response = service_session.get(f"{RECOMMENDATION_SERVICE_URL}/recommendations", 
-                                 params=request.args, timeout=60)  # Increased timeout for recommendation operations
+                                 params=request.args, timeout=30)
         else:  # POST
             response = service_session.post(f"{RECOMMENDATION_SERVICE_URL}/recommendations", 
-                                  json=request.get_json(), timeout=60)  # Increased timeout for recommendation operations
+                                  json=request.get_json(), timeout=30)
         
         return jsonify(response.json()), response.status_code
     except requests.exceptions.ConnectionError as e:
@@ -219,7 +219,7 @@ def generate_recommendations():
     
     try:
         response = service_session.post(f"{RECOMMENDATION_SERVICE_URL}/recommendations/generate", 
-                              json=request.get_json(), timeout=90)  # Increased timeout for heavy ML model operations
+                              json=request.get_json(), timeout=60)  # Increased timeout for model operations
         return jsonify(response.json()), response.status_code
     except requests.exceptions.Timeout as e:
         service_health['recommendation'] = False
@@ -241,7 +241,7 @@ def get_model_info():
     
     try:
         response = service_session.get(f"{RECOMMENDATION_SERVICE_URL}/recommendations/models", 
-                             timeout=30)  # Increased timeout for model info operations
+                             timeout=10)
         return jsonify(response.json()), response.status_code
     except requests.exceptions.ConnectionError as e:
         service_health['recommendation'] = False
